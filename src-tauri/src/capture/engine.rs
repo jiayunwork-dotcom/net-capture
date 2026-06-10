@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashMap};
 use crossbeam_channel::{Sender, Receiver, bounded};
 use pcap::{Capture, Device, PacketCodec};
 use crate::models::{PacketMetadata, RawPacket, CaptureStatus};
@@ -16,7 +16,7 @@ pub struct CaptureEngine {
     dropped_count: Arc<AtomicU64>,
     interface_name: Option<String>,
     metadata_buffer: VecDeque<PacketMetadata>,
-    raw_buffer: VecDeque<RawPacket>,
+    raw_data_store: HashMap<u64, Vec<u8>>,
     capture_handle: Option<std::thread::JoinHandle<()>>,
     stop_flag: Arc<AtomicBool>,
     tx: Option<Sender<CaptureEvent>>,
@@ -24,7 +24,7 @@ pub struct CaptureEngine {
 }
 
 pub enum CaptureEvent {
-    NewPacket(PacketMetadata),
+    NewPacket(PacketMetadata, Vec<u8>),
     Error(String),
 }
 
@@ -51,7 +51,7 @@ impl CaptureEngine {
             dropped_count: Arc::new(AtomicU64::new(0)),
             interface_name: None,
             metadata_buffer: VecDeque::with_capacity(MAX_METADATA_COUNT),
-            raw_buffer: VecDeque::new(),
+            raw_data_store: HashMap::new(),
             capture_handle: None,
             stop_flag: Arc::new(AtomicBool::new(false)),
             tx: Some(tx),
@@ -94,13 +94,12 @@ impl CaptureEngine {
         self.packet_counter.store(0, Ordering::SeqCst);
         self.dropped_count.store(0, Ordering::SeqCst);
         self.metadata_buffer.clear();
-        self.raw_buffer.clear();
+        self.raw_data_store.clear();
         self.stop_flag.store(false, Ordering::SeqCst);
         self.is_capturing.store(true, Ordering::SeqCst);
 
         let stop_flag = self.stop_flag.clone();
         let packet_counter = self.packet_counter.clone();
-        let dropped_count = self.dropped_count.clone();
         let is_capturing = self.is_capturing.clone();
         let tx = self.tx.clone().unwrap();
 
@@ -121,6 +120,7 @@ impl CaptureEngine {
                         Err(_) => continue,
                     };
 
+                    let raw_data = raw_pkt.data.clone();
                     let no = packet_counter.fetch_add(1, Ordering::SeqCst);
                     let meta = protocol::parse_packet_metadata(no, &raw_pkt);
 
@@ -134,7 +134,7 @@ impl CaptureEngine {
                         stats.record_packet(&meta);
                     }
 
-                    if tx.send(CaptureEvent::NewPacket(meta)).is_err() {
+                    if tx.send(CaptureEvent::NewPacket(meta, raw_data)).is_err() {
                         break;
                     }
                 }
@@ -168,28 +168,30 @@ impl CaptureEngine {
         }
     }
 
+    pub fn next_packet_no(&self) -> u64 {
+        self.packet_counter.fetch_add(1, Ordering::SeqCst)
+    }
+
     pub fn drain_new_packets(&mut self) -> Vec<PacketMetadata> {
         if let Some(rx) = &self.rx {
-            let mut packets = Vec::new();
+            let mut new_packets = Vec::new();
             while let Ok(event) = rx.try_recv() {
                 match event {
-                    CaptureEvent::NewPacket(meta) => {
+                    CaptureEvent::NewPacket(meta, raw_data) => {
+                        let no = meta.no;
                         if self.metadata_buffer.len() >= MAX_METADATA_COUNT {
-                            self.metadata_buffer.pop_front();
+                            if let Some(evicted) = self.metadata_buffer.pop_front() {
+                                self.raw_data_store.remove(&evicted.no);
+                            }
                         }
-                        let raw = RawPacket {
-                            timestamp_secs: meta.timestamp_secs,
-                            timestamp_micros: meta.timestamp_micros,
-                            data: Vec::new(),
-                        };
-                        self.raw_buffer.push_back(raw);
-                        packets.push(meta.clone());
-                        self.metadata_buffer.push_back(meta);
+                        self.raw_data_store.insert(no, raw_data);
+                        self.metadata_buffer.push_back(meta.clone());
+                        new_packets.push(meta);
                     }
                     CaptureEvent::Error(_) => {}
                 }
             }
-            packets
+            new_packets
         } else {
             Vec::new()
         }
@@ -203,15 +205,27 @@ impl CaptureEngine {
         self.metadata_buffer.iter().cloned().collect()
     }
 
-    pub fn store_raw_packet(&mut self, raw: RawPacket) {
-        if self.raw_buffer.len() >= MAX_METADATA_COUNT {
-            self.raw_buffer.pop_front();
-        }
-        self.raw_buffer.push_back(raw);
+    pub fn get_raw_data(&self, no: u64) -> Option<Vec<u8>> {
+        self.raw_data_store.get(&no).cloned()
     }
 
-    pub fn get_raw_packet(&self, no: u64) -> Option<&RawPacket> {
-        self.raw_buffer.get(no as usize)
+    pub fn store_raw_packet(&mut self, no: u64, raw: RawPacket) {
+        if self.metadata_buffer.len() >= MAX_METADATA_COUNT {
+            if let Some(evicted) = self.metadata_buffer.pop_front() {
+                self.raw_data_store.remove(&evicted.no);
+            }
+        }
+        self.raw_data_store.insert(no, raw.data);
+    }
+
+    pub fn store_imported_packet(&mut self, meta: PacketMetadata, raw: RawPacket) {
+        if self.metadata_buffer.len() >= MAX_METADATA_COUNT {
+            if let Some(evicted) = self.metadata_buffer.pop_front() {
+                self.raw_data_store.remove(&evicted.no);
+            }
+        }
+        self.raw_data_store.insert(meta.no, raw.data);
+        self.metadata_buffer.push_back(meta);
     }
 
     pub fn validate_bpf(&self, filter: &str) -> Result<(), String> {

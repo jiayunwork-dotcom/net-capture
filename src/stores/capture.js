@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { writable, get } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/tauri';
 
 export const interfaces = writable([]);
@@ -21,14 +21,14 @@ export async function loadInterfaces() {
 export async function startCapture() {
   try {
     bpfError.set('');
-    const iface = $selectedInterface || '';
+    const iface = get(selectedInterface);
     if (!iface) {
       bpfError.set('请选择网络接口');
       return;
     }
 
-    const filter = $bpfFilter || null;
-    const promisc = $captureMode === 'promiscuous';
+    const filter = get(bpfFilter) || null;
+    const promisc = get(captureMode) === 'promiscuous';
 
     await invoke('start_capture', {
       interfaceName: iface,

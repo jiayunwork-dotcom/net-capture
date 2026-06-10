@@ -29,7 +29,7 @@
   }
 
   function selectPacket(pkt) {
-    loadPacketDetail(pkt.no, null);
+    loadPacketDetail(pkt.no);
   }
 
   function formatAddr(pkt) {

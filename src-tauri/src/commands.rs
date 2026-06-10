@@ -53,22 +53,26 @@ pub fn validate_bpf(state: State<'_, AppState>, filter: String) -> Result<(), St
 }
 
 #[tauri::command]
+pub fn drain_new_packets(state: State<'_, AppState>) -> Result<Vec<PacketMetadata>, String> {
+    let mut engine = state.capture_engine.lock();
+    Ok(engine.drain_new_packets())
+}
+
+#[tauri::command]
 pub fn get_packet_detail(
     state: State<'_, AppState>,
     no: u64,
-    raw_data: Option<Vec<u8>>,
 ) -> Result<PacketDetail, String> {
-    let raw = if let Some(data) = raw_data {
-        RawPacket {
-            timestamp_secs: 0,
-            timestamp_micros: 0,
-            data,
-        }
-    } else {
+    let raw_data = {
         let engine = state.capture_engine.lock();
-        engine.get_raw_packet(no)
-            .map(|r| r.clone())
-            .ok_or_else(|| format!("Packet {} not found", no))?
+        engine.get_raw_data(no)
+            .ok_or_else(|| format!("Packet {} raw data not found", no))?
+    };
+
+    let raw = RawPacket {
+        timestamp_secs: 0,
+        timestamp_micros: 0,
+        data: raw_data,
     };
 
     let mut detail = protocol::parse_packet_detail(&raw);
@@ -77,7 +81,10 @@ pub fn get_packet_detail(
 }
 
 #[tauri::command]
-pub fn get_hex_dump(raw_data: Vec<u8>) -> Result<Vec<HexDumpLine>, String> {
+pub fn get_hex_dump(state: State<'_, AppState>, no: u64) -> Result<Vec<HexDumpLine>, String> {
+    let engine = state.capture_engine.lock();
+    let raw_data = engine.get_raw_data(no)
+        .ok_or_else(|| format!("Packet {} raw data not found", no))?;
     Ok(format_hex_dump(&raw_data))
 }
 
@@ -122,25 +129,28 @@ pub fn export_pcap(
 ) -> Result<(), String> {
     let engine = state.capture_engine.lock();
 
-    let packets: Vec<RawPacket> = if filtered_only {
+    let metadata_list = if filtered_only {
         if let Some(expr) = filter_expr {
             let all_meta = engine.get_all_metadata();
-            let filtered = display::filter_packets(&all_meta, &expr)?;
-            filtered.iter()
-                .filter_map(|m| engine.get_raw_packet(m.no).cloned())
-                .collect()
+            display::filter_packets(&all_meta, &expr)?
         } else {
-            engine.get_all_metadata().iter()
-                .filter_map(|m| engine.get_raw_packet(m.no).cloned())
-                .collect()
+            engine.get_all_metadata()
         }
     } else {
-        engine.get_all_metadata().iter()
-            .filter_map(|m| engine.get_raw_packet(m.no).cloned())
-            .collect()
+        engine.get_all_metadata()
     };
 
-    pcap_export::write_pcap_file(&path, &packets)
+    let raw_packets: Vec<RawPacket> = metadata_list.iter()
+        .filter_map(|m| {
+            engine.get_raw_data(m.no).map(|data| RawPacket {
+                timestamp_secs: m.timestamp_secs,
+                timestamp_micros: m.timestamp_micros,
+                data,
+            })
+        })
+        .collect();
+
+    pcap_export::write_pcap_file(&path, &raw_packets)
 }
 
 #[tauri::command]
@@ -155,7 +165,7 @@ pub fn import_pcap(
 
     let mut result = Vec::new();
     for raw in &raw_packets {
-        let no = engine.get_status().packet_count;
+        let no = engine.next_packet_no();
         let meta = protocol::parse_packet_metadata(no, raw);
 
         {
@@ -167,7 +177,7 @@ pub fn import_pcap(
             stats.record_packet(&meta);
         }
 
-        engine.store_raw_packet(raw.clone());
+        engine.store_imported_packet(meta.clone(), raw.clone());
         result.push(meta);
     }
 

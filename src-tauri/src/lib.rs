@@ -40,6 +40,7 @@ pub fn run() {
             commands::stop_capture,
             commands::get_capture_status,
             commands::validate_bpf,
+            commands::drain_new_packets,
             commands::get_packet_detail,
             commands::get_hex_dump,
             commands::apply_display_filter,
