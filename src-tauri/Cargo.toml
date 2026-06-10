@@ -1,0 +1,32 @@
+[package]
+name = "net-capture"
+version = "1.0.0"
+description = "Network Packet Capture and Protocol Analyzer"
+authors = ["NetCapture"]
+license = "MIT"
+repository = ""
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "1", features = [] }
+
+[dependencies]
+tauri = { version = "1", features = ["dialog-open", "dialog-save", "fs-all", "shell-open"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+pcap = "0.10"
+etherparse = "0.13"
+byteorder = "1"
+chrono = { version = "0.4", features = ["serde"] }
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+hex = "0.4"
+lazy_static = "1"
+regex = "1"
+thiserror = "1"
+macaddr = "1"
+cidr = "0.2"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
