@@ -587,6 +587,9 @@ fn worker_loop(
                             ..Default::default()
                         });
                         stat.total_triggers += 1;
+                        if stat.first_trigger_time.is_none() {
+                            stat.first_trigger_time = Some(meta.timestamp_secs);
+                        }
                         stat.last_trigger_time = Some(meta.timestamp_secs);
                         let cutoff = meta.timestamp_secs.saturating_sub(86400);
                         if stat.last_24h_window_start < cutoff {

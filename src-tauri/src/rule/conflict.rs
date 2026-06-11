@@ -226,12 +226,151 @@ fn conditions_have_intersection(a: &ConditionSet, b: &ConditionSet) -> bool {
             children.iter().any(|c| conditions_have_intersection(c, other))
         }
 
+        (ConditionSet::Not(inner_a), ConditionSet::Not(inner_b)) => {
+            not_and_not_intersect(inner_a, inner_b)
+        }
+
         (ConditionSet::Not(inner), other) | (other, ConditionSet::Not(inner)) => {
-            true
+            let (not_inner, other_set) = if matches!(a, ConditionSet::Not(_)) {
+                (inner.as_ref(), b)
+            } else {
+                (inner.as_ref(), a)
+            };
+            not_and_other_intersect(not_inner, other_set)
         }
 
         _ => true,
     }
+}
+
+fn not_and_other_intersect(not_inner: &ConditionSet, other: &ConditionSet) -> bool {
+    match (not_inner, other) {
+        (ConditionSet::Any, _) => false,
+        (_, ConditionSet::Never) | (ConditionSet::Never, _) => false,
+        (_, ConditionSet::Any) => true,
+
+        (ConditionSet::Protocols(not_protos), ConditionSet::Protocols(other_protos)) => {
+            other_protos.iter().any(|p| !not_protos.contains(p))
+        }
+
+        (ConditionSet::IpRanges { field: nf, cidrs: nc }, ConditionSet::IpRanges { field: of, cidrs: oc }) => {
+            if !ip_fields_compatible(*nf, *of) {
+                return true;
+            }
+            !cidrs_subset_of(oc, nc)
+        }
+
+        (ConditionSet::PortRanges { field: nf, ranges: nr }, ConditionSet::PortRanges { field: of, ranges: or }) => {
+            if !port_fields_compatible(*nf, *of) {
+                return true;
+            }
+            !port_ranges_subset_of(or, nr)
+        }
+
+        (ConditionSet::PacketLengthGt(nv), ConditionSet::PacketLengthGt(ov)) => {
+            *ov <= *nv
+        }
+        (ConditionSet::PacketLengthGt(nv), ConditionSet::PacketLengthLt(ov)) => {
+            *ov > 0
+        }
+        (ConditionSet::PacketLengthGt(nv), ConditionSet::PacketLengthEq(ov)) => {
+            *ov <= *nv
+        }
+        (ConditionSet::PacketLengthLt(nv), ConditionSet::PacketLengthGt(ov)) => {
+            true
+        }
+        (ConditionSet::PacketLengthLt(nv), ConditionSet::PacketLengthLt(ov)) => {
+            *ov > 0
+        }
+        (ConditionSet::PacketLengthLt(nv), ConditionSet::PacketLengthEq(ov)) => {
+            *ov < *nv
+        }
+        (ConditionSet::PacketLengthEq(nv), ConditionSet::PacketLengthGt(ov)) => {
+            *nv <= *ov
+        }
+        (ConditionSet::PacketLengthEq(nv), ConditionSet::PacketLengthLt(ov)) => {
+            *nv >= *ov
+        }
+        (ConditionSet::PacketLengthEq(nv), ConditionSet::PacketLengthEq(ov)) => {
+            *nv != *ov
+        }
+
+        (ConditionSet::And(children), _) => {
+            !children.iter().all(|c| not_and_other_intersect(c, other) == false)
+        }
+        (_, ConditionSet::And(children)) => {
+            children.iter().all(|c| not_and_other_intersect(not_inner, c))
+        }
+
+        (ConditionSet::Or(children), _) => {
+            children.iter().all(|c| not_and_other_intersect(c, other))
+        }
+        (_, ConditionSet::Or(children)) => {
+            children.iter().any(|c| not_and_other_intersect(not_inner, c))
+        }
+
+        (ConditionSet::Not(inner), _) => {
+            conditions_have_intersection(inner, other)
+        }
+
+        _ => true,
+    }
+}
+
+fn not_and_not_intersect(a: &ConditionSet, b: &ConditionSet) -> bool {
+    !conditions_are_exhaustive(a, b)
+}
+
+fn conditions_are_exhaustive(a: &ConditionSet, b: &ConditionSet) -> bool {
+    match (a, b) {
+        (ConditionSet::Protocols(pa), ConditionSet::Protocols(pb)) => {
+            let common_set: std::collections::HashSet<String> = pa.iter().chain(pb.iter()).cloned().collect();
+            common_set.len() >= 200
+        }
+        _ => false,
+    }
+}
+
+fn cidrs_subset_of(subject: &[IpCidr], superset: &[IpCidr]) -> bool {
+    if superset.is_empty() {
+        return subject.is_empty();
+    }
+    for s in subject {
+        let s_min = network_addr(s);
+        let s_max = broadcast_addr(s);
+        let mut covered = false;
+        for super_c in superset {
+            let super_min = network_addr(super_c);
+            let super_max = broadcast_addr(super_c);
+            if super_min <= s_min && s_max <= super_max {
+                covered = true;
+                break;
+            }
+        }
+        if !covered {
+            return false;
+        }
+    }
+    true
+}
+
+fn port_ranges_subset_of(subject: &[(u16, u16)], superset: &[(u16, u16)]) -> bool {
+    if superset.is_empty() {
+        return subject.is_empty();
+    }
+    for (s_min, s_max) in subject {
+        let mut covered = false;
+        for (super_min, super_max) in superset {
+            if super_min <= s_min && s_max <= super_max {
+                covered = true;
+                break;
+            }
+        }
+        if !covered {
+            return false;
+        }
+    }
+    true
 }
 
 fn actions_conflict(a: &AlertActions, b: &AlertActions) -> Option<String> {

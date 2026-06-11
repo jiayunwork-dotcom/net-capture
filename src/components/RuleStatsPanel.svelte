@@ -23,9 +23,21 @@
   }
 
   function calcFrequency(stat) {
-    if (!stat.first_trigger_time || !stat.last_trigger_time) return 0;
-    const duration = stat.last_trigger_time - stat.first_trigger_time;
-    if (duration === 0) return stat.total_triggers;
+    const now = Date.now() / 1000;
+    if (stat.total_triggers === 0) return 0;
+    let duration;
+    if (stat.first_trigger_time && stat.last_trigger_time) {
+      duration = stat.last_trigger_time - stat.first_trigger_time;
+    } else {
+      duration = 0;
+    }
+    if (duration < 60 && stat.last_24h_triggers > 0) {
+      const windowSecs = Math.min(now - (stat.first_trigger_time || now - 3600), 86400);
+      if (windowSecs > 0) {
+        return (stat.last_24h_triggers / windowSecs * 60).toFixed(2);
+      }
+    }
+    if (duration === 0) return stat.total_triggers > 0 ? stat.total_triggers.toFixed(2) : '0.00';
     return (stat.total_triggers / duration * 60).toFixed(2);
   }
 
@@ -79,7 +91,7 @@
         最近触发 {getSortIcon('last_trigger_time')}
       </div>
       <div class="col sortable" on:click={() => toggleSort('frequency')}>
-        次/分钟 {getSortIcon('frequency')}
+        频率(次/分) {getSortIcon('frequency')}
       </div>
     </div>
 
@@ -143,7 +155,7 @@
   }
 
   .col {
-    width: 90px;
+    width: 100px;
     text-align: center;
   }
 
