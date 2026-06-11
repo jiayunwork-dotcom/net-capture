@@ -136,18 +136,23 @@
       {#each displayAlerts as alert (alert.id)}
         {@const priorityColor = getPriorityColor(alert.priority)}
         <div
-          class="alert-item priority-{alert.priority}"
+          class="alert-item priority-{alert.priority} {alert.banned_hit ? 'banned-hit' : ''}"
           style="border-left-color: {priorityColor.border};"
           on:click={() => handleAlertClick(alert)}
         >
           <div class="alert-header">
             <span class="alert-time">{formatAlertTime(alert.timestamp_secs, alert.timestamp_micros)}</span>
-            <span
-              class="priority-badge"
-              style="background: {priorityColor.bg}; color: {priorityColor.text};"
-            >
-              {priorityColor.label}优先级
-            </span>
+            <div class="alert-header-badges">
+              {#if alert.banned_hit}
+                <span class="banned-badge">已封禁IP</span>
+              {/if}
+              <span
+                class="priority-badge"
+                style="background: {priorityColor.bg}; color: {priorityColor.text};"
+              >
+                {priorityColor.label}优先级
+              </span>
+            </div>
           </div>
           <div class="alert-title">
             <span class="rule-name">{alert.rule_name}</span>
@@ -307,6 +312,29 @@
     justify-content: space-between;
     align-items: center;
     margin-bottom: 6px;
+  }
+
+  .alert-header-badges {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .banned-badge {
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: 600;
+    background: rgba(239, 83, 80, 0.2);
+    color: #ef5350;
+    border: 1px solid rgba(239, 83, 80, 0.3);
+  }
+
+  .banned-hit .rule-name,
+  .banned-hit .alert-summary,
+  .banned-hit .alert-detail {
+    text-decoration: line-through;
+    opacity: 0.6;
   }
 
   .alert-time {

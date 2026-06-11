@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::io::{BufRead, BufReader};
 use parking_lot::Mutex;
@@ -30,6 +30,26 @@ impl ResponseExecutor {
         executor
     }
 
+    fn get_condition(action: &ResponseAction) -> ConditionMode {
+        match action {
+            ResponseAction::Webhook { condition, .. } => *condition,
+            ResponseAction::IpBan { condition, .. } => *condition,
+            ResponseAction::ScriptExec { condition, .. } => *condition,
+        }
+    }
+
+    fn should_execute(condition: ConditionMode, prev_success: Option<bool>) -> bool {
+        match condition {
+            ConditionMode::Always => true,
+            ConditionMode::OnSuccess => prev_success == Some(true),
+            ConditionMode::OnFailure => prev_success == Some(false),
+        }
+    }
+
+    fn is_result_success(result: &ResponseResult) -> bool {
+        matches!(result, ResponseResult::Success)
+    }
+
     pub fn execute_response_chain_async(
         self_arc: Arc<Mutex<Self>>,
         rule: DetectionRule,
@@ -40,8 +60,6 @@ impl ResponseExecutor {
         timestamp_secs: u64,
     ) {
         std::thread::spawn(move || {
-            let mut entries: Vec<ResponseLogEntry> = Vec::new();
-
             if rule.response_actions.is_empty() {
                 return;
             }
@@ -73,25 +91,189 @@ impl ResponseExecutor {
                 executor.update_cooldown(&rule.id, timestamp_secs);
             }
 
-            for action in &rule.response_actions {
+            if rule.parallel_execution {
+                Self::execute_parallel(self_arc, &rule, &src_addr, &dst_addr, &protocol, &match_summary, timestamp_secs);
+            } else {
+                Self::execute_serial(self_arc, &rule, &src_addr, &dst_addr, &protocol, &match_summary, timestamp_secs);
+            }
+        });
+    }
+
+    fn execute_serial(
+        self_arc: Arc<Mutex<Self>>,
+        rule: &DetectionRule,
+        src_addr: &str,
+        dst_addr: &str,
+        protocol: &str,
+        match_summary: &str,
+        timestamp_secs: u64,
+    ) {
+        let mut prev_success: Option<bool> = None;
+
+        for (index, action) in rule.response_actions.iter().enumerate() {
+            let condition = Self::get_condition(action);
+
+            if index > 0 && !Self::should_execute(condition, prev_success) {
+                let entry = ResponseLogEntry {
+                    id: generate_response_id(),
+                    trigger_time: timestamp_secs,
+                    rule_id: rule.id.clone(),
+                    rule_name: rule.name.clone(),
+                    action_type: action_type_str(action),
+                    result: ResponseResult::ConditionSkipped,
+                    duration_ms: 0,
+                    detail: Some(format!(
+                        "前置条件不满足({:?}), 跳过执行",
+                        condition
+                    )),
+                };
+                let mut executor = self_arc.lock();
+                executor.add_log(entry);
+                continue;
+            }
+
+            let entry = {
+                let executor = self_arc.lock();
+                executor.execute_action(
+                    action,
+                    rule,
+                    src_addr,
+                    dst_addr,
+                    protocol,
+                    match_summary,
+                    timestamp_secs,
+                )
+            };
+
+            prev_success = Some(Self::is_result_success(&entry.result));
+
+            {
+                let mut executor = self_arc.lock();
+                executor.add_log(entry);
+            }
+        }
+    }
+
+    fn execute_parallel(
+        self_arc: Arc<Mutex<Self>>,
+        rule: &DetectionRule,
+        src_addr: &str,
+        dst_addr: &str,
+        protocol: &str,
+        match_summary: &str,
+        timestamp_secs: u64,
+    ) {
+        let actions_len = rule.response_actions.len();
+        let results: Arc<Mutex<Vec<Option<(ResponseLogEntry, bool)>>>> = Arc::new(Mutex::new(vec![None; actions_len]));
+        let completed: Arc<Mutex<HashMap<usize, bool>>> = Arc::new(Mutex::new(HashMap::new()));
+
+        let mut handles = Vec::new();
+
+        for (index, action) in rule.response_actions.iter().enumerate() {
+            let condition = Self::get_condition(action);
+            let self_arc_clone = self_arc.clone();
+            let rule_clone = rule.clone();
+            let src = src_addr.to_string();
+            let dst = dst_addr.to_string();
+            let proto = protocol.to_string();
+            let summary = match_summary.to_string();
+            let results_clone = results.clone();
+            let completed_clone = completed.clone();
+            let action_clone = action.clone();
+
+            let handle = std::thread::spawn(move || {
+                if index > 0 && condition != ConditionMode::Always {
+                    let wait_for = match condition {
+                        ConditionMode::OnSuccess => true,
+                        ConditionMode::OnFailure => false,
+                        ConditionMode::Always => unreachable!(),
+                    };
+
+                    loop {
+                        let comp = completed_clone.lock();
+                        let has_dep = (index > 0).then(|| comp.get(&(index - 1)).copied());
+                        drop(comp);
+
+                        match has_dep {
+                            Some(Some(dep_result)) => {
+                                if dep_result != wait_for {
+                                    let entry = ResponseLogEntry {
+                                        id: generate_response_id(),
+                                        trigger_time: timestamp_secs,
+                                        rule_id: rule_clone.id.clone(),
+                                        rule_name: rule_clone.name.clone(),
+                                        action_type: action_type_str(&action_clone),
+                                        result: ResponseResult::ConditionSkipped,
+                                        duration_ms: 0,
+                                        detail: Some(format!(
+                                            "前置条件不满足({:?}), 跳过执行",
+                                            condition
+                                        )),
+                                    };
+                                    let mut res = results_clone.lock();
+                                    res[index] = Some((entry, false));
+                                    let mut comp = completed_clone.lock();
+                                    comp.insert(index, false);
+                                    return;
+                                }
+                                break;
+                            }
+                            None => break,
+                            Some(None) => {
+                                drop(has_dep);
+                                std::thread::sleep(std::time::Duration::from_millis(10));
+                            }
+                        }
+                    }
+                }
+
                 let entry = {
-                    let executor = self_arc.lock();
+                    let executor = self_arc_clone.lock();
                     executor.execute_action(
-                        action,
-                        &rule,
-                        &src_addr,
-                        &dst_addr,
-                        &protocol,
-                        &match_summary,
+                        &action_clone,
+                        &rule_clone,
+                        &src,
+                        &dst,
+                        &proto,
+                        &summary,
                         timestamp_secs,
                     )
                 };
+
+                let success = Self::is_result_success(&entry.result);
+
                 {
+                    let mut res = results_clone.lock();
+                    res[index] = Some((entry, success));
+                }
+                {
+                    let mut comp = completed_clone.lock();
+                    comp.insert(index, success);
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        for handle in handles {
+            let _ = handle.join();
+        }
+
+        let mut max_duration_ms: u64 = 0;
+        {
+            let res = results.lock();
+            for opt in res.iter() {
+                if let Some((entry, _success)) = opt {
+                    if entry.duration_ms > max_duration_ms {
+                        max_duration_ms = entry.duration_ms;
+                    }
                     let mut executor = self_arc.lock();
-                    executor.add_log(entry);
+                    executor.add_log(entry.clone());
                 }
             }
-        });
+        }
+
+        let _ = max_duration_ms;
     }
 
     #[allow(dead_code)]
@@ -135,7 +317,30 @@ impl ResponseExecutor {
 
         self.update_cooldown(&rule.id, timestamp_secs);
 
-        for action in &rule.response_actions {
+        let mut prev_success: Option<bool> = None;
+
+        for (index, action) in rule.response_actions.iter().enumerate() {
+            let condition = Self::get_condition(action);
+
+            if index > 0 && !Self::should_execute(condition, prev_success) {
+                let entry = ResponseLogEntry {
+                    id: generate_response_id(),
+                    trigger_time: timestamp_secs,
+                    rule_id: rule.id.clone(),
+                    rule_name: rule.name.clone(),
+                    action_type: action_type_str(action),
+                    result: ResponseResult::ConditionSkipped,
+                    duration_ms: 0,
+                    detail: Some(format!(
+                        "前置条件不满足({:?}), 跳过执行",
+                        condition
+                    )),
+                };
+                self.add_log(entry.clone());
+                entries.push(entry);
+                continue;
+            }
+
             let entry = self.execute_action(
                 action,
                 rule,
@@ -145,6 +350,7 @@ impl ResponseExecutor {
                 match_summary,
                 timestamp_secs,
             );
+            prev_success = Some(Self::is_result_success(&entry.result));
             self.add_log(entry.clone());
             entries.push(entry);
         }
@@ -163,13 +369,13 @@ impl ResponseExecutor {
         timestamp_secs: u64,
     ) -> ResponseLogEntry {
         match action {
-            ResponseAction::Webhook { url, headers, timeout_secs } => {
+            ResponseAction::Webhook { url, headers, timeout_secs, .. } => {
                 self.execute_webhook(rule, url, headers, *timeout_secs, src_addr, dst_addr, protocol, match_summary, timestamp_secs)
             }
-            ResponseAction::IpBan { target, expire_minutes } => {
+            ResponseAction::IpBan { target, expire_minutes, .. } => {
                 self.execute_ip_ban(rule, target, *expire_minutes, src_addr, dst_addr, timestamp_secs)
             }
-            ResponseAction::ScriptExec { path, args_template, timeout_secs } => {
+            ResponseAction::ScriptExec { path, args_template, timeout_secs, .. } => {
                 self.execute_script(rule, path, args_template, *timeout_secs, src_addr, dst_addr, protocol, timestamp_secs)
             }
         }
@@ -292,6 +498,7 @@ impl ResponseExecutor {
                 rule_id: rule.id.clone(),
                 rule_name: rule.name.clone(),
                 expire_minutes,
+                related_alerts_count: 0,
             };
 
             let mut ban_list = self.ban_list.lock();
@@ -674,4 +881,12 @@ fn generate_response_id() -> String {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     format!("resp_{}", nanos)
+}
+
+fn action_type_str(action: &ResponseAction) -> String {
+    match action {
+        ResponseAction::Webhook { .. } => "webhook".to_string(),
+        ResponseAction::IpBan { .. } => "ip_ban".to_string(),
+        ResponseAction::ScriptExec { .. } => "script_exec".to_string(),
+    }
 }

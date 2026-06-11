@@ -107,6 +107,9 @@ pub fn run() {
             rule::commands::clear_all_bans,
             rule::commands::get_response_config,
             rule::commands::save_response_config,
+            rule::commands::get_ban_related_alerts,
+            rule::commands::export_ban_csv,
+            rule::commands::import_ban_csv,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

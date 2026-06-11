@@ -1,9 +1,26 @@
 <script>
   import { onMount } from 'svelte';
+  import { open, save } from '@tauri-apps/api/dialog';
   import {
     banEntries, loadBanEntries, unbanIp, cleanupExpiredBans, clearAllBans,
-    formatBanTime, isBanExpired,
+    formatBanTime, isBanExpired, getBanRelatedAlerts, exportBanCsv, importBanCsv,
   } from '../stores/response.js';
+
+  let expandedIp = null;
+  let relatedAlerts = {};
+  let importStats = null;
+
+  async function toggleRelatedAlerts(ip) {
+    if (expandedIp === ip) {
+      expandedIp = null;
+      return;
+    }
+    expandedIp = ip;
+    if (!relatedAlerts[ip]) {
+      const alerts = await getBanRelatedAlerts(ip);
+      relatedAlerts = { ...relatedAlerts, [ip]: alerts };
+    }
+  }
 
   function handleUnban(ip) {
     if (!confirm(`确定解封 IP "${ip}" 吗？`)) return;
@@ -25,6 +42,41 @@
     clearAllBans();
   }
 
+  async function handleExportCsv() {
+    try {
+      const csv = await exportBanCsv();
+      const filePath = await save({
+        filters: [{ name: 'CSV', extensions: ['csv'] }],
+        defaultPath: 'ban_list.csv',
+      });
+      if (filePath) {
+        const { writeTextFile } = await import('@tauri-apps/api/fs');
+        await writeTextFile(filePath, csv);
+        alert('导出成功');
+      }
+    } catch (e) {
+      alert('导出失败: ' + e);
+    }
+  }
+
+  async function handleImportCsv() {
+    try {
+      const filePath = await open({
+        filters: [{ name: 'CSV', extensions: ['csv'] }],
+        multiple: false,
+      });
+      if (filePath) {
+        const { readTextFile } = await import('@tauri-apps/api/fs');
+        const content = await readTextFile(filePath);
+        const result = await importBanCsv(content);
+        importStats = result;
+        setTimeout(() => { importStats = null; }, 5000);
+      }
+    } catch (e) {
+      alert('导入失败: ' + e);
+    }
+  }
+
   onMount(() => {
     loadBanEntries();
   });
@@ -34,9 +86,16 @@
   <div class="toolbar">
     <div class="toolbar-left">
       <span class="entry-count">共 {$banEntries.length} 条封禁</span>
+      {#if importStats}
+        <span class="import-stats">
+          新增 {importStats.added} / 更新 {importStats.updated} / 忽略 {importStats.ignored}
+        </span>
+      {/if}
     </div>
     <div class="toolbar-right">
       <button class="btn-small" on:click={loadBanEntries}>刷新</button>
+      <button class="btn-small" on:click={handleExportCsv}>📤 导出CSV</button>
+      <button class="btn-small" on:click={handleImportCsv}>📥 导入CSV</button>
       <button class="btn-small" on:click={handleCleanup}>清理过期</button>
       <button class="btn-small danger" on:click={handleClearAll}>清空全部</button>
     </div>
@@ -58,6 +117,7 @@
             <th>关联规则</th>
             <th>过期</th>
             <th>状态</th>
+            <th>关联告警</th>
             <th>操作</th>
           </tr>
         </thead>
@@ -78,10 +138,37 @@
                   <span class="status-badge active">封禁中</span>
                 {/if}
               </td>
+              <td class="related-alerts">
+                <button
+                  class="btn-related"
+                  on:click={() => toggleRelatedAlerts(entry.ip)}
+                >
+                  {entry.related_alerts_count || 0} 条
+                </button>
+              </td>
               <td class="actions">
                 <button class="btn-unban" on:click={() => handleUnban(entry.ip)}>解封</button>
               </td>
             </tr>
+            {#if expandedIp === entry.ip}
+              <tr class="related-row">
+                <td colspan="7">
+                  <div class="related-alerts-detail">
+                    {#if relatedAlerts[entry.ip] && relatedAlerts[entry.ip].length > 0}
+                      {#each relatedAlerts[entry.ip] as ra}
+                        <div class="related-alert-item">
+                          <span class="ra-rule">{ra.rule_name}</span>
+                          <span class="ra-time">{formatBanTime(ra.timestamp_secs)}</span>
+                          <span class="ra-summary">{ra.match_summary}</span>
+                        </div>
+                      {/each}
+                    {:else}
+                      <div class="no-related">暂无关联告警</div>
+                    {/if}
+                  </div>
+                </td>
+              </tr>
+            {/if}
           {/each}
         </tbody>
       </table>
@@ -255,5 +342,73 @@
 
   .btn-unban:hover {
     background: rgba(79, 195, 247, 0.15);
+  }
+
+  .import-stats {
+    font-size: 11px;
+    color: #4caf50;
+    background: rgba(76, 175, 80, 0.1);
+    padding: 2px 8px;
+    border-radius: 3px;
+  }
+
+  .btn-related {
+    padding: 2px 8px;
+    background: #3a3a3a;
+    color: #4fc3f7;
+    border: 1px solid #4fc3f7;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 10px;
+  }
+
+  .btn-related:hover {
+    background: rgba(79, 195, 247, 0.15);
+  }
+
+  .related-row td {
+    padding: 0 !important;
+    border-bottom: 1px solid #3a3a3a;
+  }
+
+  .related-alerts-detail {
+    padding: 10px 16px;
+    background: #1a1a2a;
+  }
+
+  .related-alert-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 6px 8px;
+    border-bottom: 1px solid #2d2d2d;
+    font-size: 11px;
+  }
+
+  .related-alert-item:last-child {
+    border-bottom: none;
+  }
+
+  .ra-rule {
+    color: #4fc3f7;
+    min-width: 120px;
+  }
+
+  .ra-time {
+    color: #888;
+    font-family: monospace;
+    font-size: 10px;
+  }
+
+  .ra-summary {
+    color: #aaa;
+    flex: 1;
+  }
+
+  .no-related {
+    color: #666;
+    text-align: center;
+    padding: 8px;
+    font-size: 11px;
   }
 </style>

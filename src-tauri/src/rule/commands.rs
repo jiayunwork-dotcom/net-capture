@@ -363,3 +363,21 @@ pub fn save_response_config(state: State<'_, AppState>, config: ResponseConfig) 
     let manager = state.rule_manager.lock();
     manager.save_response_config(config)
 }
+
+#[tauri::command]
+pub fn get_ban_related_alerts(state: State<'_, AppState>, ip: String) -> Result<Vec<BanRelatedAlert>, String> {
+    let manager = state.rule_manager.lock();
+    Ok(manager.get_ban_related_alerts(&ip))
+}
+
+#[tauri::command]
+pub fn export_ban_csv(state: State<'_, AppState>) -> Result<String, String> {
+    let manager = state.rule_manager.lock();
+    manager.export_ban_csv()
+}
+
+#[tauri::command]
+pub fn import_ban_csv(state: State<'_, AppState>, content: String) -> Result<BanImportResult, String> {
+    let manager = state.rule_manager.lock();
+    manager.import_ban_csv(&content)
+}

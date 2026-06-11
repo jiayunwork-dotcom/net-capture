@@ -136,6 +136,20 @@ pub enum BanTarget {
     Either,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConditionMode {
+    Always,
+    OnSuccess,
+    OnFailure,
+}
+
+impl Default for ConditionMode {
+    fn default() -> Self {
+        ConditionMode::Always
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ResponseAction {
@@ -143,15 +157,21 @@ pub enum ResponseAction {
         url: String,
         headers: std::collections::HashMap<String, String>,
         timeout_secs: u64,
+        #[serde(default)]
+        condition: ConditionMode,
     },
     IpBan {
         target: BanTarget,
         expire_minutes: u64,
+        #[serde(default)]
+        condition: ConditionMode,
     },
     ScriptExec {
         path: String,
         args_template: String,
         timeout_secs: u64,
+        #[serde(default)]
+        condition: ConditionMode,
     },
 }
 
@@ -197,6 +217,8 @@ pub struct BanEntry {
     pub rule_id: String,
     pub rule_name: String,
     pub expire_minutes: u64,
+    #[serde(default)]
+    pub related_alerts_count: u32,
 }
 
 impl BanEntry {
@@ -215,6 +237,7 @@ pub enum ResponseResult {
     Failed,
     Timeout,
     CooldownSkipped,
+    ConditionSkipped,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -335,6 +358,8 @@ pub struct DetectionRule {
     pub response_actions: Vec<ResponseAction>,
     #[serde(default = "default_cooldown")]
     pub cooldown_secs: u64,
+    #[serde(default)]
+    pub parallel_execution: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -350,6 +375,8 @@ pub struct AlertRecord {
     pub src_addr: String,
     pub dst_addr: String,
     pub protocol: String,
+    #[serde(default)]
+    pub banned_hit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -403,3 +430,18 @@ impl std::fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BanImportResult {
+    pub added: u32,
+    pub updated: u32,
+    pub ignored: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BanRelatedAlert {
+    pub alert_id: String,
+    pub rule_name: String,
+    pub timestamp_secs: u64,
+    pub match_summary: String,
+}

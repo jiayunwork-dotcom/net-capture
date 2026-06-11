@@ -497,11 +497,12 @@ impl RuleManager {
         let action_executor = self.action_executor.clone();
         let shared_stats = self.shared_stats.clone();
         let response_executor = self.response_executor.clone();
+        let ban_list = self.ban_list.clone();
 
         let handle = std::thread::Builder::new()
             .name("rule-engine-worker".into())
             .spawn(move || {
-                worker_loop(rx, stop_flag, alert_tx, rule_engine, action_executor, shared_stats, response_executor);
+                worker_loop(rx, stop_flag, alert_tx, rule_engine, action_executor, shared_stats, response_executor, ban_list);
             })
             .unwrap();
 
@@ -612,6 +613,18 @@ impl RuleManager {
 
         Ok(())
     }
+
+    pub fn get_ban_related_alerts(&self, ip: &str) -> Vec<BanRelatedAlert> {
+        self.ban_list.lock().get_related_alerts(ip)
+    }
+
+    pub fn export_ban_csv(&self) -> Result<String, String> {
+        self.ban_list.lock().export_csv()
+    }
+
+    pub fn import_ban_csv(&self, content: &str) -> Result<BanImportResult, String> {
+        self.ban_list.lock().import_csv(content)
+    }
 }
 
 impl Default for RuleManager {
@@ -628,6 +641,7 @@ fn worker_loop(
     action_executor: Arc<Mutex<AlertActionExecutor>>,
     shared_stats: Arc<Mutex<HashMap<String, RuleStats>>>,
     response_executor: Arc<Mutex<ResponseExecutor>>,
+    ban_list: Arc<Mutex<BanListManager>>,
 ) {
     while !stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
         match rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -648,6 +662,11 @@ fn worker_loop(
                 };
 
                 for rule in matched_rules {
+                    let banned_hit = {
+                        let bl = ban_list.lock();
+                        bl.check_ip_match(&meta.src_addr, &meta.dst_addr)
+                    };
+
                     let alert = AlertRecord {
                         id: generate_alert_id(),
                         rule_id: rule.id.clone(),
@@ -660,11 +679,36 @@ fn worker_loop(
                         src_addr: meta.src_addr.clone(),
                         dst_addr: meta.dst_addr.clone(),
                         protocol: meta.protocol.as_str().to_string(),
+                        banned_hit,
                     };
 
                     {
                         let executor = action_executor.lock();
                         executor.execute_actions(&rule, meta.no, Some(&raw_packet));
+                    }
+
+                    if banned_hit {
+                        let bl_arc = ban_list.clone();
+                        let src = meta.src_addr.clone();
+                        let dst = meta.dst_addr.clone();
+                        let alert_id = alert.id.clone();
+                        let rname = rule.name.clone();
+                        let ts = meta.timestamp_secs;
+                        let summary = alert.match_summary.clone();
+                        std::thread::spawn(move || {
+                            let mut bl = bl_arc.lock();
+                            for ip in [&src, &dst] {
+                                if bl.is_banned(ip) {
+                                    bl.record_related_alert(ip, BanRelatedAlert {
+                                        alert_id: alert_id.clone(),
+                                        rule_name: rname.clone(),
+                                        timestamp_secs: ts,
+                                        match_summary: summary.clone(),
+                                    });
+                                    let _ = bl.save_to_disk();
+                                }
+                            }
+                        });
                     }
 
                     if !rule.response_actions.is_empty() {

@@ -107,6 +107,7 @@ export function getResultLabel(result) {
     case 'failed': return '失败';
     case 'timeout': return '超时';
     case 'cooldown_skipped': return '冷却跳过';
+    case 'condition_skipped': return '条件跳过';
     default: return result;
   }
 }
@@ -117,6 +118,7 @@ export function getResultColor(result) {
     case 'failed': return '#ef5350';
     case 'timeout': return '#ff9800';
     case 'cooldown_skipped': return '#888';
+    case 'condition_skipped': return '#9e9e9e';
     default: return '#888';
   }
 }
@@ -164,4 +166,52 @@ export function isBanExpired(entry) {
   if (entry.expire_minutes === 0) return false;
   const now = Math.floor(Date.now() / 1000);
   return now > entry.ban_time + entry.expire_minutes * 60;
+}
+
+export function getConditionModeLabel(mode) {
+  switch (mode) {
+    case 'always': return '始终执行';
+    case 'on_success': return '成功时执行';
+    case 'on_failure': return '失败时执行';
+    default: return '始终执行';
+  }
+}
+
+export function getConditionModeColor(mode) {
+  switch (mode) {
+    case 'on_success': return '#4caf50';
+    case 'on_failure': return '#ef5350';
+    default: return '#888';
+  }
+}
+
+export async function getBanRelatedAlerts(ip) {
+  try {
+    const alerts = await invoke('get_ban_related_alerts', { ip });
+    return alerts || [];
+  } catch (e) {
+    console.error('Get ban related alerts error:', e);
+    return [];
+  }
+}
+
+export async function exportBanCsv() {
+  try {
+    const csv = await invoke('export_ban_csv');
+    return csv;
+  } catch (e) {
+    console.error('Export ban CSV error:', e);
+    throw e;
+  }
+}
+
+export async function importBanCsv(content) {
+  try {
+    const result = await invoke('import_ban_csv', { content });
+    await loadBanEntries();
+    return result;
+  } catch (e) {
+    console.error('Import ban CSV error:', e);
+    throw e;
+  }
 }

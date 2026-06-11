@@ -268,6 +268,11 @@
     background: rgba(255, 152, 0, 0.05);
   }
 
+  .logs-table tr.result-condition_skipped {
+    background: rgba(158, 158, 158, 0.05);
+    opacity: 0.7;
+  }
+
   .time {
     font-family: monospace;
     color: #888;

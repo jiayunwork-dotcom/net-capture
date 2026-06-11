@@ -19,6 +19,7 @@
   } from '../stores/rules.js';
   import {
     responseConfig, loadResponseConfig, saveResponseConfig,
+    getConditionModeLabel, getConditionModeColor,
   } from '../stores/response.js';
 
   export let onClose = () => {};
@@ -45,6 +46,7 @@
     },
     response_actions: [],
     cooldown_secs: 60,
+    parallel_execution: false,
   };
 
   let newGroupName = '';
@@ -74,13 +76,13 @@
     let action;
     switch (type) {
       case 'webhook':
-        action = { type: 'webhook', url: '', headers: {}, timeout_secs: 10 };
+        action = { type: 'webhook', url: '', headers: {}, timeout_secs: 10, condition: 'always' };
         break;
       case 'ip_ban':
-        action = { type: 'ip_ban', target: 'src', expire_minutes: 60 };
+        action = { type: 'ip_ban', target: 'src', expire_minutes: 60, condition: 'always' };
         break;
       case 'script_exec':
-        action = { type: 'script_exec', path: '', args_template: '', timeout_secs: 30 };
+        action = { type: 'script_exec', path: '', args_template: '', timeout_secs: 30, condition: 'always' };
         break;
       default:
         return;
@@ -783,13 +785,36 @@
               <span class="hint">0 = 使用全局默认值</span>
             </div>
 
+            <div class="cooldown-row">
+              <label class="checkbox-label">
+                <input type="checkbox" bind:checked={ruleForm.parallel_execution} />
+                并行执行
+              </label>
+              <span class="hint">开启后多个响应动作同时执行(受条件分支约束)</span>
+            </div>
+
             <div class="response-actions-list">
               {#each ruleForm.response_actions as action, i}
-                <div class="response-action-item">
+                {@const conditionColor = getConditionModeColor(action.condition || 'always')}
+                {@const isFirst = i === 0}
+                <div class="response-action-item" style="border-color: {action.condition && action.condition !== 'always' ? conditionColor : '#3a3a3a'}; border-width: {action.condition && action.condition !== 'always' ? '2px' : '1px'};">
                   <div class="action-header">
-                    <span class="action-type-label">
-                      {action.type === 'webhook' ? '🔗 Webhook' : action.type === 'ip_ban' ? '🚫 IP封禁' : '📜 脚本执行'}
-                    </span>
+                    <div class="action-header-left">
+                      <select
+                        class="condition-select"
+                        value={action.condition || 'always'}
+                        disabled={isFirst}
+                        on:change={(e) => updateResponseAction(i, 'condition', e.target.value)}
+                        title={isFirst ? '第一个动作无前置条件' : '选择前置条件'}
+                      >
+                        <option value="always">始终执行</option>
+                        <option value="on_success" disabled={isFirst}>成功时执行</option>
+                        <option value="on_failure" disabled={isFirst}>失败时执行</option>
+                      </select>
+                      <span class="action-type-label">
+                        {action.type === 'webhook' ? '🔗 Webhook' : action.type === 'ip_ban' ? '🚫 IP封禁' : '📜 脚本执行'}
+                      </span>
+                    </div>
                     <div class="action-controls">
                       <button class="btn-icon" on:click={() => moveResponseAction(i, -1)} disabled={i === 0}>↑</button>
                       <button class="btn-icon" on:click={() => moveResponseAction(i, 1)} disabled={i === ruleForm.response_actions.length - 1}>↓</button>
@@ -1095,6 +1120,32 @@
     justify-content: space-between;
     align-items: center;
     margin-bottom: 8px;
+  }
+
+  .action-header-left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .condition-select {
+    padding: 2px 6px;
+    background: #1e1e1e;
+    color: #ccc;
+    border: 1px solid #555;
+    border-radius: 3px;
+    font-size: 10px;
+    cursor: pointer;
+  }
+
+  .condition-select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
+  .condition-select:focus {
+    outline: none;
+    border-color: #4fc3f7;
   }
 
   .action-type-label {
