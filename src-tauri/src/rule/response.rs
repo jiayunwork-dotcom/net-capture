@@ -108,6 +108,7 @@ impl ResponseExecutor {
         match_summary: &str,
         timestamp_secs: u64,
     ) {
+        let chain_start = std::time::Instant::now();
         let mut prev_success: Option<bool> = None;
 
         for (index, action) in rule.response_actions.iter().enumerate() {
@@ -152,6 +153,26 @@ impl ResponseExecutor {
                 executor.add_log(entry);
             }
         }
+
+        let total_ms = chain_start.elapsed().as_millis() as u64;
+        let summary_entry = ResponseLogEntry {
+            id: generate_response_id(),
+            trigger_time: timestamp_secs,
+            rule_id: rule.id.clone(),
+            rule_name: rule.name.clone(),
+            action_type: "chain".to_string(),
+            result: ResponseResult::Success,
+            duration_ms: total_ms,
+            detail: Some(format!(
+                "串行执行完成, 总耗时: {}ms, 动作数: {}",
+                total_ms,
+                rule.response_actions.len()
+            )),
+        };
+        {
+            let mut executor = self_arc.lock();
+            executor.add_log(summary_entry);
+        }
     }
 
     fn execute_parallel(
@@ -163,6 +184,7 @@ impl ResponseExecutor {
         match_summary: &str,
         timestamp_secs: u64,
     ) {
+        let chain_start = std::time::Instant::now();
         let actions_len = rule.response_actions.len();
         let results: Arc<Mutex<Vec<Option<(ResponseLogEntry, bool)>>>> = Arc::new(Mutex::new(vec![None; actions_len]));
         let completed: Arc<Mutex<HashMap<usize, bool>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -259,13 +281,14 @@ impl ResponseExecutor {
             let _ = handle.join();
         }
 
-        let mut max_duration_ms: u64 = 0;
+        let total_ms = chain_start.elapsed().as_millis() as u64;
+        let mut max_action_ms: u64 = 0;
         {
             let res = results.lock();
             for opt in res.iter() {
                 if let Some((entry, _success)) = opt {
-                    if entry.duration_ms > max_duration_ms {
-                        max_duration_ms = entry.duration_ms;
+                    if entry.duration_ms > max_action_ms {
+                        max_action_ms = entry.duration_ms;
                     }
                     let mut executor = self_arc.lock();
                     executor.add_log(entry.clone());
@@ -273,7 +296,25 @@ impl ResponseExecutor {
             }
         }
 
-        let _ = max_duration_ms;
+        let summary_entry = ResponseLogEntry {
+            id: generate_response_id(),
+            trigger_time: timestamp_secs,
+            rule_id: rule.id.clone(),
+            rule_name: rule.name.clone(),
+            action_type: "chain".to_string(),
+            result: ResponseResult::Success,
+            duration_ms: total_ms,
+            detail: Some(format!(
+                "并行执行完成, 总耗时: {}ms (最长单动作: {}ms), 动作数: {}",
+                total_ms,
+                max_action_ms,
+                rule.response_actions.len()
+            )),
+        };
+        {
+            let mut executor = self_arc.lock();
+            executor.add_log(summary_entry);
+        }
     }
 
     #[allow(dead_code)]

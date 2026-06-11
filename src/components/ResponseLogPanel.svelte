@@ -94,7 +94,7 @@
         </thead>
         <tbody>
           {#each $responseLogs as log (log.id)}
-            <tr class="result-{log.result}">
+            <tr class="result-{log.result} action-{log.action_type}">
               <td class="time">{formatResponseTime(log.trigger_time)}</td>
               <td class="rule-name">{log.rule_name}</td>
               <td class="action-type">
@@ -271,6 +271,26 @@
   .logs-table tr.result-condition_skipped {
     background: rgba(158, 158, 158, 0.05);
     opacity: 0.7;
+  }
+
+  .logs-table tr.action-chain {
+    background: rgba(79, 195, 247, 0.08);
+    border-bottom: 1px solid rgba(79, 195, 247, 0.25);
+  }
+
+  .logs-table tr.action-chain td {
+    font-weight: 600;
+  }
+
+  .logs-table tr.action-chain .action-badge {
+    background: rgba(79, 195, 247, 0.2);
+    color: #4fc3f7;
+  }
+
+  .logs-table tr.action-chain .duration {
+    color: #ba68c8;
+    font-weight: 700;
+    font-size: 13px;
   }
 
   .time {
