@@ -2197,6 +2197,7 @@ dependencies = [
  "macaddr",
  "parking_lot",
  "pcap",
+ "rand 0.8.6",
  "regex",
  "reqwest",
  "serde",

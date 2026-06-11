@@ -9,6 +9,7 @@ pub mod stats;
 pub mod tls;
 pub mod commands;
 pub mod rule;
+pub mod replay;
 
 use std::sync::Arc;
 use parking_lot::Mutex;
@@ -16,12 +17,26 @@ use crate::capture::CaptureEngine;
 use crate::session::SessionTracker;
 use crate::stats::StatsCollector;
 use crate::rule::manager::RuleManager;
+use crate::replay::patterns::AttackPatternManager;
+
+pub struct ReplayState {
+    pub pattern_manager: Arc<Mutex<AttackPatternManager>>,
+}
+
+impl Default for ReplayState {
+    fn default() -> Self {
+        Self {
+            pattern_manager: Arc::new(Mutex::new(AttackPatternManager::new())),
+        }
+    }
+}
 
 pub struct AppState {
     pub capture_engine: Arc<Mutex<CaptureEngine>>,
     pub session_tracker: Arc<Mutex<SessionTracker>>,
     pub stats_collector: Arc<Mutex<StatsCollector>>,
     pub rule_manager: Arc<Mutex<RuleManager>>,
+    pub replay_state: ReplayState,
 }
 
 impl Default for AppState {
@@ -31,6 +46,7 @@ impl Default for AppState {
             session_tracker: Arc::new(Mutex::new(SessionTracker::new())),
             stats_collector: Arc::new(Mutex::new(StatsCollector::new())),
             rule_manager: Arc::new(Mutex::new(RuleManager::new())),
+            replay_state: ReplayState::default(),
         }
     }
 }
@@ -41,6 +57,7 @@ pub fn run() {
         .setup(|app| {
             let state = tauri::Manager::state::<AppState>(app);
             let _ = rule::commands::init_rule_manager(&app.handle(), &state);
+            let _ = replay::commands::init_replay_module(app.handle(), state.replay_state.pattern_manager.clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -110,6 +127,18 @@ pub fn run() {
             rule::commands::get_ban_related_alerts,
             rule::commands::export_ban_csv,
             rule::commands::import_ban_csv,
+            replay::commands::get_session_packets_for_replay,
+            replay::commands::replay_sessions,
+            replay::commands::get_attack_patterns,
+            replay::commands::add_attack_pattern,
+            replay::commands::update_attack_pattern,
+            replay::commands::delete_attack_pattern,
+            replay::commands::generate_simulated_traffic,
+            replay::commands::run_pattern_against_engine,
+            replay::commands::generate_rule_effectiveness_report,
+            replay::commands::export_replay_result_json,
+            replay::commands::export_batch_summary_json,
+            replay::commands::export_effectiveness_report_json,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

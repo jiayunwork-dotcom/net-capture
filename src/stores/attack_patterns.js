@@ -1,0 +1,131 @@
+import { writable } from 'svelte/store';
+import { invoke } from '@tauri-apps/api/tauri';
+import { save } from '@tauri-apps/api/dialog';
+
+export const attackPatterns = writable([]);
+export const patternSimResult = writable(null);
+export const effectivenessReport = writable(null);
+export const showEffectivenessReport = writable(false);
+export const showPatternSimResult = writable(false);
+export const isGeneratingTraffic = writable(false);
+export const isRunningReport = writable(false);
+
+export async function loadAttackPatterns(category) {
+  try {
+    const result = await invoke('get_attack_patterns', { category: category || null });
+    attackPatterns.set(result);
+    return result;
+  } catch (e) {
+    console.error('Load attack patterns error:', e);
+    return [];
+  }
+}
+
+export async function addAttackPattern(pattern) {
+  try {
+    await invoke('add_attack_pattern', { pattern });
+    await loadAttackPatterns();
+    return true;
+  } catch (e) {
+    console.error('Add attack pattern error:', e);
+    return false;
+  }
+}
+
+export async function updateAttackPattern(pattern) {
+  try {
+    await invoke('update_attack_pattern', { pattern });
+    await loadAttackPatterns();
+    return true;
+  } catch (e) {
+    console.error('Update attack pattern error:', e);
+    return false;
+  }
+}
+
+export async function deleteAttackPattern(patternId) {
+  try {
+    await invoke('delete_attack_pattern', { patternId });
+    await loadAttackPatterns();
+    return true;
+  } catch (e) {
+    console.error('Delete attack pattern error:', e);
+    return false;
+  }
+}
+
+export async function runPatternAgainstEngine(patternId, targetIp) {
+  isGeneratingTraffic.set(true);
+  try {
+    const result = await invoke('run_pattern_against_engine', {
+      patternId,
+      targetIp: targetIp || null,
+    });
+    patternSimResult.set(result);
+    showPatternSimResult.set(true);
+    return result;
+  } catch (e) {
+    console.error('Run pattern against engine error:', e);
+    throw e;
+  } finally {
+    isGeneratingTraffic.set(false);
+  }
+}
+
+export async function generateEffectivenessReport(patternIds, targetIp) {
+  isRunningReport.set(true);
+  try {
+    const report = await invoke('generate_rule_effectiveness_report', {
+      patternIds,
+      targetIp: targetIp || null,
+    });
+    effectivenessReport.set(report);
+    showEffectivenessReport.set(true);
+    return report;
+  } catch (e) {
+    console.error('Generate effectiveness report error:', e);
+    throw e;
+  } finally {
+    isRunningReport.set(false);
+  }
+}
+
+export async function exportEffectivenessReport(report) {
+  try {
+    const path = await save({
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      defaultPath: 'rule_effectiveness_report.json',
+    });
+    if (path) {
+      await invoke('export_effectiveness_report_json', { report, path });
+      return true;
+    }
+    return false;
+  } catch (e) {
+    console.error('Export effectiveness report error:', e);
+    return false;
+  }
+}
+
+export function closePatternSimResult() {
+  showPatternSimResult.set(false);
+  patternSimResult.set(null);
+}
+
+export function closeEffectivenessReport() {
+  showEffectivenessReport.set(false);
+  effectivenessReport.set(null);
+}
+
+export const ATTACK_CATEGORIES = [
+  { value: 'port_scan', label: '端口扫描' },
+  { value: 'syn_flood', label: 'SYN洪泛' },
+  { value: 'dns_amplification', label: 'DNS放大' },
+  { value: 'brute_force', label: '暴力破解' },
+  { value: 'arp_spoof', label: 'ARP欺骗' },
+  { value: 'http_flood', label: 'HTTP洪泛' },
+  { value: 'udp_flood', label: 'UDP洪泛' },
+  { value: 'icmp_flood', label: 'ICMP洪泛' },
+  { value: 'slow_loris', label: 'SlowLoris' },
+  { value: 'custom', label: '自定义' },
+];

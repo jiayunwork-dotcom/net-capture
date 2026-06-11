@@ -551,6 +551,10 @@ impl RuleManager {
         engine.clear_rate_counters();
     }
 
+    pub fn get_rule_engine_clone(&self) -> Arc<Mutex<RuleEngine>> {
+        self.rule_engine.clone()
+    }
+
     pub fn max_rules(&self) -> usize {
         persistence::max_rules()
     }

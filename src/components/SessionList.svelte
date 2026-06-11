@@ -2,11 +2,16 @@
   import { onMount } from 'svelte';
   import { sessions, loadSessions } from '../stores/sessions.js';
   import { isCapturing } from '../stores/capture.js';
+  import { replaySessions } from '../stores/replay.js';
+  import { traceTcpStream } from '../stores/sessions.js';
 
   let sessionPollInterval = null;
+  let selectedSessionIds = new Set();
+  let contextMenu = { visible: false, x: 0, y: 0, sessionId: null };
 
   onMount(() => {
     loadSessions();
+    document.addEventListener('click', closeContextMenu);
   });
 
   $: if ($isCapturing) {
@@ -44,17 +49,84 @@
     if (state === 'Closed') return 'state-closed';
     return 'state-expired';
   }
+
+  function toggleSelect(sessionId, event) {
+    if (event.ctrlKey || event.metaKey || event.shiftKey) {
+      if (selectedSessionIds.has(sessionId)) {
+        selectedSessionIds.delete(sessionId);
+      } else {
+        selectedSessionIds.add(sessionId);
+      }
+    } else {
+      selectedSessionIds.clear();
+      selectedSessionIds.add(sessionId);
+    }
+    selectedSessionIds = new Set(selectedSessionIds);
+  }
+
+  function selectAll() {
+    selectedSessionIds = new Set($sessions.map(s => s.id));
+  }
+
+  function clearSelection() {
+    selectedSessionIds = new Set();
+  }
+
+  function showContextMenu(event, sessionId) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!selectedSessionIds.has(sessionId)) {
+      selectedSessionIds.clear();
+      selectedSessionIds.add(sessionId);
+      selectedSessionIds = new Set(selectedSessionIds);
+    }
+    contextMenu = {
+      visible: true,
+      x: event.clientX,
+      y: event.clientY,
+      sessionId,
+    };
+  }
+
+  function closeContextMenu() {
+    contextMenu = { visible: false, x: 0, y: 0, sessionId: null };
+  }
+
+  async function handleReplaySelected() {
+    closeContextMenu();
+    const ids = Array.from(selectedSessionIds);
+    if (ids.length === 0) return;
+    try {
+      await replaySessions(ids);
+    } catch (e) {
+      alert('回放失败: ' + e);
+    }
+  }
+
+  function handleViewStream(sessionId) {
+    closeContextMenu();
+    traceTcpStream(sessionId);
+  }
+
+  $: selectedCount = selectedSessionIds.size;
 </script>
 
 <div class="session-list">
   <div class="session-header">
-    <h3>会话列表</h3>
-    <button class="btn-refresh" on:click={loadSessions}>刷新</button>
+    <h3>会话列表 {selectedCount > 0 ? `(已选 ${selectedCount})` : ''}</h3>
+    <div class="header-actions">
+      {#if selectedCount > 0}
+        <button class="btn-action" on:click={clearSelection}>取消选择</button>
+      {/if}
+      <button class="btn-select-all" on:click={selectAll}>全选</button>
+      <button class="btn-refresh" on:click={loadSessions}>刷新</button>
+    </div>
   </div>
   <div class="table-wrapper">
     <table>
       <thead>
         <tr>
+          <th style="width: 30px;"></th>
           <th>源地址</th>
           <th>目的地址</th>
           <th>协议</th>
@@ -65,8 +137,24 @@
         </tr>
       </thead>
       <tbody>
-        {#each $sessions as session}
-          <tr>
+        {#each $sessions as session (session.id)}
+          <tr
+            class:selected={selectedSessionIds.has(session.id)}
+            on:click={(e) => toggleSelect(session.id, e)}
+            on:contextmenu={(e) => showContextMenu(e, session.id)}
+          >
+            <td>
+              <input
+                type="checkbox"
+                checked={selectedSessionIds.has(session.id)}
+                on:click|stopPropagation
+                on:change={(e) => {
+                  if (e.target.checked) selectedSessionIds.add(session.id);
+                  else selectedSessionIds.delete(session.id);
+                  selectedSessionIds = new Set(selectedSessionIds);
+                }}
+              />
+            </td>
             <td>{session.src_addr}:{session.src_port}</td>
             <td>{session.dst_addr}:{session.dst_port}</td>
             <td>{session.protocol}</td>
@@ -82,6 +170,23 @@
       <div class="no-sessions">暂无会话数据</div>
     {/if}
   </div>
+
+  {#if contextMenu.visible}
+    <div
+      class="context-menu"
+      style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
+      onclick="event.stopPropagation()"
+    >
+      <div class="menu-item" on:click={handleReplaySelected}>
+        ▶️ 回放到规则引擎 {selectedCount > 1 ? `(${selectedCount}个会话)` : ''}
+      </div>
+      {#if selectedCount === 1}
+        <div class="menu-item" on:click={() => handleViewStream(contextMenu.sessionId)}>
+          📊 查看TCP流
+        </div>
+      {/if}
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -90,6 +195,7 @@
     display: flex;
     flex-direction: column;
     background: #1e1e1e;
+    position: relative;
   }
   .session-header {
     display: flex;
@@ -105,7 +211,11 @@
     margin: 0;
     font-weight: 500;
   }
-  .btn-refresh {
+  .header-actions {
+    display: flex;
+    gap: 6px;
+  }
+  .btn-refresh, .btn-select-all, .btn-action {
     background: #444;
     color: #ccc;
     border: none;
@@ -114,7 +224,7 @@
     cursor: pointer;
     font-size: 12px;
   }
-  .btn-refresh:hover {
+  .btn-refresh:hover, .btn-select-all:hover, .btn-action:hover {
     background: #555;
   }
   .table-wrapper {
@@ -148,6 +258,12 @@
   tr:hover td {
     background: #2a2a2a;
   }
+  tr.selected td {
+    background: #1e3a5f;
+  }
+  tr.selected:hover td {
+    background: #254876;
+  }
   .state-badge {
     display: inline-block;
     padding: 1px 6px;
@@ -162,5 +278,28 @@
     text-align: center;
     padding: 40px;
     font-size: 14px;
+  }
+  input[type="checkbox"] {
+    cursor: pointer;
+  }
+  .context-menu {
+    position: fixed;
+    background: #2d2d2d;
+    border: 1px solid #555;
+    border-radius: 6px;
+    min-width: 200px;
+    z-index: 1000;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+    overflow: hidden;
+  }
+  .menu-item {
+    padding: 8px 14px;
+    cursor: pointer;
+    color: #ccc;
+    font-size: 13px;
+  }
+  .menu-item:hover {
+    background: #3a3a3a;
+    color: #fff;
   }
 </style>

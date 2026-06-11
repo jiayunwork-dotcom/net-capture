@@ -14,6 +14,12 @@
   import AlertPanel from './components/AlertPanel.svelte';
   import RuleSettingsPanel from './components/RuleSettingsPanel.svelte';
   import ResponseLogPanel from './components/ResponseLogPanel.svelte';
+  import ReplayResultPanel from './components/ReplayResultPanel.svelte';
+  import AttackPatternPanel from './components/AttackPatternPanel.svelte';
+  import RuleEffectivenessReport from './components/RuleEffectivenessReport.svelte';
+  import PatternSimResult from './components/PatternSimResult.svelte';
+  import { isReplaying, replayProgress } from './stores/replay.js';
+  import { isGeneratingTraffic, isRunningReport } from './stores/attack_patterns.js';
   import { captureStatus, isCapturing, loadInterfaces } from './stores/capture.js';
   import { packets, filteredPackets, loadPacketDetail, selectedPacketNo } from './stores/packets.js';
   import { loadSessions } from './stores/sessions.js';
@@ -294,6 +300,15 @@
         {#if $captureStatus.dropped_count > 0}
           <span class="dropped">丢弃: {$captureStatus.dropped_count}</span>
         {/if}
+        {#if $isReplaying}
+          <span class="replay-status">🎬 回放检测中...</span>
+        {/if}
+        {#if $isGeneratingTraffic}
+          <span class="replay-status">⚔️ 生成模拟流量中...</span>
+        {/if}
+        {#if $isRunningReport}
+          <span class="replay-status">📊 生成有效性报告中...</span>
+        {/if}
       </span>
       <button
         class="toolbar-btn compare-btn"
@@ -335,6 +350,9 @@
       <button class="tab" class:active={activeTab === 'response_log'} on:click={() => activeTab = 'response_log'}>
         响应日志
       </button>
+      <button class="tab" class:active={activeTab === 'attack_patterns'} on:click={() => activeTab = 'attack_patterns'}>
+        ⚔️ 攻击特征库
+      </button>
     </div>
 
     <div class="content-area">
@@ -357,12 +375,17 @@
         <AlertPanel onSelectPacket={handleSelectAlertPacket} />
       {:else if activeTab === 'response_log'}
         <ResponseLogPanel />
+      {:else if activeTab === 'attack_patterns'}
+        <AttackPatternPanel />
       {/if}
     </div>
   </div>
 
   <TcpStream />
   <PacketCompare visible={showCompare} onClose={closeCompare} />
+  <ReplayResultPanel />
+  <RuleEffectivenessReport />
+  <PatternSimResult />
 </div>
 
 {#if showRuleSettings}
@@ -446,6 +469,16 @@
   .dropped {
     color: #ef5350;
     margin-left: 8px;
+  }
+  .replay-status {
+    color: #4fc3f7;
+    margin-left: 12px;
+    font-weight: 500;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
   }
   .toolbar-btn {
     background: #3a3a3a;
