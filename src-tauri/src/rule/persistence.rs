@@ -123,6 +123,7 @@ pub fn export_rules(app_data_dir: &std::path::Path, rule_ids: Option<&[String]>)
             version: rules_file.version,
             groups: filtered_groups,
             rules: filtered_rules,
+            rule_stats: Vec::new(),
         })
     } else {
         Ok(rules_file)

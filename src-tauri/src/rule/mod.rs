@@ -5,4 +5,5 @@ pub mod rate_counter;
 pub mod actions;
 pub mod persistence;
 pub mod manager;
+pub mod conflict;
 pub mod commands;

@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::collections::VecDeque;
+use std::collections::HashMap;
 use parking_lot::Mutex;
 use crossbeam_channel::{Sender, Receiver, bounded};
 use crate::models::{PacketMetadata, RawPacket, RulePacketEvent};
@@ -7,13 +8,17 @@ use super::models::*;
 use super::engine::RuleEngine;
 use super::actions::AlertActionExecutor;
 use super::persistence;
+use super::conflict;
 
 pub const MAX_ALERTS: usize = 50_000;
+const MAX_VERSIONS: usize = 20;
 
 pub struct RuleManager {
     rules: Vec<DetectionRule>,
     groups: Vec<RuleGroup>,
     alerts: VecDeque<AlertRecord>,
+    rule_stats: HashMap<String, RuleStats>,
+    shared_stats: Arc<Mutex<HashMap<String, RuleStats>>>,
     rule_engine: Arc<Mutex<RuleEngine>>,
     action_executor: Arc<Mutex<AlertActionExecutor>>,
     app_data_dir: Option<std::path::PathBuf>,
@@ -34,6 +39,8 @@ impl RuleManager {
             rules: Vec::new(),
             groups: Vec::new(),
             alerts: VecDeque::new(),
+            rule_stats: HashMap::new(),
+            shared_stats: Arc::new(Mutex::new(HashMap::new())),
             rule_engine: Arc::new(Mutex::new(RuleEngine::new())),
             action_executor: Arc::new(Mutex::new(AlertActionExecutor::new())),
             app_data_dir: None,
@@ -65,6 +72,18 @@ impl RuleManager {
             let rules_file = persistence::load_rules(dir)?;
             self.groups = rules_file.groups;
             self.rules = rules_file.rules;
+            self.rule_stats.clear();
+            for stat in rules_file.rule_stats {
+                self.rule_stats.insert(stat.rule_id.clone(), stat);
+            }
+            for rule in &self.rules {
+                if !self.rule_stats.contains_key(&rule.id) {
+                    self.rule_stats.insert(rule.id.clone(), RuleStats {
+                        rule_id: rule.id.clone(),
+                        ..Default::default()
+                    });
+                }
+            }
             self.refresh_engine();
         }
         Ok(())
@@ -72,10 +91,24 @@ impl RuleManager {
 
     pub fn save_to_disk(&self) -> Result<(), String> {
         if let Some(ref dir) = self.app_data_dir {
+            let shared = self.shared_stats.lock();
+            let mut stats_map: HashMap<String, RuleStats> = self.rule_stats.clone();
+            for (id, shared_stat) in shared.iter() {
+                if let Some(local) = stats_map.get_mut(id) {
+                    local.total_triggers = local.total_triggers.max(shared_stat.total_triggers);
+                    local.triggers_last_24h = shared_stat.triggers_last_24h;
+                    local.last_trigger_time = shared_stat.last_trigger_time.or(local.last_trigger_time);
+                } else {
+                    stats_map.insert(id.clone(), shared_stat.clone());
+                }
+            }
+            drop(shared);
+            let stats_vec: Vec<RuleStats> = stats_map.into_values().collect();
             let rules_file = RulesFile {
                 version: "1.0".to_string(),
                 groups: self.groups.clone(),
                 rules: self.rules.clone(),
+                rule_stats: stats_vec,
             };
             persistence::save_rules(dir, &rules_file)?;
         }
@@ -115,6 +148,18 @@ impl RuleManager {
         self.alerts.len()
     }
 
+    fn create_version_snapshot(rule: &DetectionRule) -> RuleVersion {
+        let summary = generate_condition_summary(&rule.condition);
+        RuleVersion {
+            version: rule.current_version,
+            condition: strip_compiled_regex(rule.condition.clone()),
+            expression: rule.expression.clone(),
+            actions: rule.actions.clone(),
+            saved_at: current_timestamp_secs(),
+            summary,
+        }
+    }
+
     pub fn add_rule(&mut self, mut rule: DetectionRule) -> Result<(), String> {
         if self.rules.len() >= persistence::max_rules() {
             return Err(format!(
@@ -129,6 +174,15 @@ impl RuleManager {
 
         let _ = super::engine::compile_regex_in_rule(&mut rule)?;
 
+        rule.current_version = 1;
+        let version = Self::create_version_snapshot(&rule);
+        rule.versions = vec![version];
+
+        self.rule_stats.insert(rule.id.clone(), RuleStats {
+            rule_id: rule.id.clone(),
+            ..Default::default()
+        });
+
         self.rules.push(rule);
         self.refresh_engine();
         self.save_to_disk()?;
@@ -139,6 +193,17 @@ impl RuleManager {
         let _ = super::engine::compile_regex_in_rule(&mut rule)?;
 
         if let Some(existing) = self.rules.iter_mut().find(|r| r.id == rule.id) {
+            let old_version = Self::create_version_snapshot(existing);
+
+            rule.current_version = existing.current_version + 1;
+            let mut versions = existing.versions.clone();
+            versions.push(old_version);
+            if versions.len() > MAX_VERSIONS {
+                let drain_count = versions.len() - MAX_VERSIONS;
+                versions.drain(..drain_count);
+            }
+            rule.versions = versions;
+
             *existing = rule;
             self.refresh_engine();
             self.save_to_disk()?;
@@ -150,6 +215,7 @@ impl RuleManager {
 
     pub fn delete_rule(&mut self, rule_id: &str) -> Result<(), String> {
         self.rules.retain(|r| r.id != rule_id);
+        self.rule_stats.remove(rule_id);
         self.refresh_engine();
         self.save_to_disk()?;
         Ok(())
@@ -165,6 +231,134 @@ impl RuleManager {
         } else {
             Err("规则不存在".to_string())
         }
+    }
+
+    pub fn get_rule_versions(&self, rule_id: &str) -> Option<Vec<RuleVersion>> {
+        self.rules.iter().find(|r| r.id == rule_id).map(|r| r.versions.clone())
+    }
+
+    pub fn rollback_rule(&mut self, rule_id: &str, target_version: u32) -> Result<(), String> {
+        if let Some(rule) = self.rules.iter_mut().find(|r| r.id == rule_id) {
+            let target = rule.versions.iter().find(|v| v.version == target_version);
+            let target = match target {
+                Some(v) => v.clone(),
+                None => return Err("目标版本不存在".to_string()),
+            };
+
+            let old_snapshot = Self::create_version_snapshot(rule);
+            rule.versions.push(old_snapshot);
+            if rule.versions.len() > MAX_VERSIONS {
+                let drain_count = rule.versions.len() - MAX_VERSIONS;
+                rule.versions.drain(..drain_count);
+            }
+
+            rule.current_version += 1;
+            rule.condition = target.condition.clone();
+            rule.expression = target.expression.clone();
+            rule.actions = target.actions.clone();
+            rule.updated_at = current_timestamp_secs();
+
+            let _ = super::engine::compile_regex_in_rule(rule);
+
+            self.refresh_engine();
+            self.save_to_disk()?;
+            Ok(())
+        } else {
+            Err("规则不存在".to_string())
+        }
+    }
+
+    pub fn check_conflicts(&self, rule: &DetectionRule) -> Vec<RuleConflict> {
+        let mut conflicts = Vec::new();
+        for existing in &self.rules {
+            if !existing.enabled || existing.id == rule.id {
+                continue;
+            }
+            if let Some(c) = conflict::check_conflict(existing, rule) {
+                conflicts.push(c);
+            }
+        }
+        conflicts
+    }
+
+    pub fn get_all_stats(&self) -> Vec<RuleStats> {
+        let shared = self.shared_stats.lock();
+        let mut stats: Vec<RuleStats> = self.rule_stats.values().cloned().collect();
+        for (id, shared_stat) in shared.iter() {
+            if let Some(local) = stats.iter_mut().find(|s| s.rule_id == *id) {
+                local.total_triggers = local.total_triggers.max(shared_stat.total_triggers);
+                local.triggers_last_24h = shared_stat.triggers_last_24h;
+                local.last_trigger_time = shared_stat.last_trigger_time.or(local.last_trigger_time);
+            } else {
+                stats.push(shared_stat.clone());
+            }
+        }
+        for rule in &self.rules {
+            if !stats.iter().any(|s| s.rule_id == rule.id) {
+                stats.push(RuleStats {
+                    rule_id: rule.id.clone(),
+                    ..Default::default()
+                });
+            }
+        }
+        for stat in &mut stats {
+            stat.last_24h_triggers = stat.triggers_last_24h;
+        }
+        stats
+    }
+
+    pub fn increment_rule_stat(&mut self, rule_id: &str) {
+        let now = current_timestamp_secs();
+        let stat = self.rule_stats.entry(rule_id.to_string()).or_insert_with(|| RuleStats {
+            rule_id: rule_id.to_string(),
+            ..Default::default()
+        });
+        stat.total_triggers += 1;
+        stat.last_24h_triggers += 1;
+        if stat.first_trigger_time.is_none() {
+            stat.first_trigger_time = Some(now);
+        }
+        stat.last_trigger_time = Some(now);
+    }
+
+    pub fn batch_toggle(&mut self, rule_ids: &[String], enabled: bool) -> Result<(), String> {
+        let now = current_timestamp_secs();
+        for id in rule_ids {
+            if let Some(rule) = self.rules.iter_mut().find(|r| r.id == *id) {
+                rule.enabled = enabled;
+                rule.updated_at = now;
+            }
+        }
+        self.refresh_engine();
+        self.save_to_disk()?;
+        Ok(())
+    }
+
+    pub fn batch_delete(&mut self, rule_ids: &[String]) -> Result<(), String> {
+        let id_set: std::collections::HashSet<String> = rule_ids.iter().cloned().collect();
+        self.rules.retain(|r| !id_set.contains(&r.id));
+        for id in rule_ids {
+            self.rule_stats.remove(id);
+        }
+        self.refresh_engine();
+        self.save_to_disk()?;
+        Ok(())
+    }
+
+    pub fn batch_move_to_group(&mut self, rule_ids: &[String], group_id: Option<&str>) -> Result<(), String> {
+        if let Some(gid) = group_id {
+            if !self.groups.iter().any(|g| g.id == gid) {
+                return Err("目标分组不存在".to_string());
+            }
+        }
+        for id in rule_ids {
+            if let Some(rule) = self.rules.iter_mut().find(|r| r.id == *id) {
+                rule.group = group_id.map(|g| g.to_string());
+                rule.updated_at = current_timestamp_secs();
+            }
+        }
+        self.save_to_disk()?;
+        Ok(())
     }
 
     pub fn add_group(&mut self, group: RuleGroup) -> Result<(), String> {
@@ -203,6 +397,7 @@ impl RuleManager {
             version: "1.0".to_string(),
             groups: self.groups.clone(),
             rules: self.rules.clone(),
+            rule_stats: Vec::new(),
         };
 
         if let Some(ids) = rule_ids {
@@ -225,6 +420,7 @@ impl RuleManager {
                 version: rules_file.version,
                 groups: filtered_groups,
                 rules: filtered_rules,
+                rule_stats: Vec::new(),
             })
         } else {
             Ok(rules_file)
@@ -245,6 +441,10 @@ impl RuleManager {
                 break;
             }
             if !self.rules.iter().any(|r| r.id == rule.id) {
+                self.rule_stats.insert(rule.id.clone(), RuleStats {
+                    rule_id: rule.id.clone(),
+                    ..Default::default()
+                });
                 self.rules.push(rule.clone());
                 imported += 1;
             }
@@ -265,11 +465,12 @@ impl RuleManager {
         let alert_tx = self.alert_tx.clone().unwrap();
         let rule_engine = self.rule_engine.clone();
         let action_executor = self.action_executor.clone();
+        let shared_stats = self.shared_stats.clone();
 
         let handle = std::thread::Builder::new()
             .name("rule-engine-worker".into())
             .spawn(move || {
-                worker_loop(rx, stop_flag, alert_tx, rule_engine, action_executor);
+                worker_loop(rx, stop_flag, alert_tx, rule_engine, action_executor, shared_stats);
             })
             .unwrap();
 
@@ -339,6 +540,7 @@ fn worker_loop(
     alert_tx: crossbeam_channel::Sender<AlertRecord>,
     rule_engine: Arc<Mutex<RuleEngine>>,
     action_executor: Arc<Mutex<AlertActionExecutor>>,
+    shared_stats: Arc<Mutex<HashMap<String, RuleStats>>>,
 ) {
     while !stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
         match rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -376,6 +578,28 @@ fn worker_loop(
                     {
                         let executor = action_executor.lock();
                         executor.execute_actions(&rule, meta.no, Some(&raw_packet));
+                    }
+
+                    {
+                        let mut stats_map = shared_stats.lock();
+                        let stat = stats_map.entry(rule.id.clone()).or_insert_with(|| RuleStats {
+                            rule_id: rule.id.clone(),
+                            ..Default::default()
+                        });
+                        stat.total_triggers += 1;
+                        stat.last_trigger_time = Some(meta.timestamp_secs);
+                        let cutoff = meta.timestamp_secs.saturating_sub(86400);
+                        if stat.last_24h_window_start < cutoff {
+                            let triggers_in_window: u64 = stat.recent_triggers.iter().filter(|&&t| t >= cutoff).count() as u64;
+                            stat.triggers_last_24h = triggers_in_window;
+                            stat.last_24h_window_start = cutoff;
+                            stat.recent_triggers.retain(|&t| t >= cutoff);
+                        }
+                        stat.triggers_last_24h += 1;
+                        stat.recent_triggers.push(meta.timestamp_secs);
+                        if stat.recent_triggers.len() > 10000 {
+                            stat.recent_triggers.drain(0..1000);
+                        }
                     }
 
                     let _ = alert_tx.send(alert);
@@ -457,6 +681,94 @@ fn collect_match_parts(node: &ConditionNode, meta: &PacketMetadata, parts: &mut 
         ConditionNode::DnsBlacklist { domains: _ } => {
             parts.push("DNS黑名单匹配".to_string());
         }
+    }
+}
+
+fn generate_condition_summary(condition: &ConditionNode) -> String {
+    let mut parts = Vec::new();
+    collect_summary_parts(condition, &mut parts, 3);
+    if parts.is_empty() {
+        "空条件".to_string()
+    } else {
+        parts.join("; ")
+    }
+}
+
+fn collect_summary_parts(node: &ConditionNode, parts: &mut Vec<String>, limit: usize) {
+    if parts.len() >= limit {
+        return;
+    }
+    match node {
+        ConditionNode::And { children } | ConditionNode::Or { children } => {
+            for child in children {
+                collect_summary_parts(child, parts, limit);
+                if parts.len() >= limit {
+                    return;
+                }
+            }
+        }
+        ConditionNode::Not { child } => {
+            collect_summary_parts(child, parts, limit);
+        }
+        ConditionNode::ProtocolMatch { protocol } => {
+            parts.push(format!("协议:{}", protocol));
+        }
+        ConditionNode::IpMatch { field, cidr } => {
+            let f = match field {
+                IpField::Src => "源",
+                IpField::Dst => "目的",
+                IpField::Either => "",
+            };
+            parts.push(format!("{}IP:{}", f, cidr));
+        }
+        ConditionNode::PortRange { field, min, max } => {
+            let f = match field {
+                PortField::Src => "源",
+                PortField::Dst => "目的",
+                PortField::Either => "",
+            };
+            parts.push(format!("{}端口:{}-{}", f, min, max));
+        }
+        ConditionNode::PacketLength { operator, value } => {
+            let op = match operator {
+                LengthOperator::GreaterThan => ">",
+                LengthOperator::LessThan => "<",
+                LengthOperator::Equal => "==",
+            };
+            parts.push(format!("包长{}{}", op, value));
+        }
+        ConditionNode::TcpFlags { flags, .. } => {
+            let s: Vec<String> = flags.iter().map(|f| format!("{:?}", f)).collect();
+            parts.push(format!("TCP:{}", s.join(",")));
+        }
+        ConditionNode::PayloadKeyword { pattern, .. } => {
+            parts.push(format!("载荷:{}", pattern));
+        }
+        ConditionNode::RateLimit { window_secs, threshold, .. } => {
+            parts.push(format!("速率:{}/{}s", threshold, window_secs));
+        }
+        ConditionNode::DnsBlacklist { domains } => {
+            parts.push(format!("DNS黑名单:{}个", domains.len()));
+        }
+    }
+}
+
+fn strip_compiled_regex(node: ConditionNode) -> ConditionNode {
+    match node {
+        ConditionNode::And { children } => ConditionNode::And {
+            children: children.into_iter().map(strip_compiled_regex).collect(),
+        },
+        ConditionNode::Or { children } => ConditionNode::Or {
+            children: children.into_iter().map(strip_compiled_regex).collect(),
+        },
+        ConditionNode::Not { child } => ConditionNode::Not {
+            child: Box::new(strip_compiled_regex(*child)),
+        },
+        ConditionNode::PayloadKeyword { pattern, .. } => ConditionNode::PayloadKeyword {
+            pattern,
+            compiled: None,
+        },
+        other => other,
     }
 }
 

@@ -151,6 +151,68 @@ impl Default for AlertActions {
     }
 }
 
+const MAX_VERSIONS: usize = 20;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleVersion {
+    pub version: u32,
+    pub condition: ConditionNode,
+    pub expression: String,
+    pub actions: AlertActions,
+    pub saved_at: u64,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleStats {
+    pub rule_id: String,
+    pub total_triggers: u64,
+    #[serde(default)]
+    pub triggers_last_24h: u64,
+    #[serde(default)]
+    pub last_24h_window_start: u64,
+    pub last_trigger_time: Option<u64>,
+    pub first_trigger_time: Option<u64>,
+    #[serde(default)]
+    pub recent_triggers: Vec<u64>,
+    #[serde(rename = "last_24h_triggers")]
+    pub last_24h_triggers: u64,
+}
+
+impl Default for RuleStats {
+    fn default() -> Self {
+        Self {
+            rule_id: String::new(),
+            total_triggers: 0,
+            triggers_last_24h: 0,
+            last_24h_window_start: 0,
+            last_trigger_time: None,
+            first_trigger_time: None,
+            recent_triggers: Vec::new(),
+            last_24h_triggers: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConditionRange {
+    pub protocols: Vec<String>,
+    pub src_cidrs: Vec<String>,
+    pub dst_cidrs: Vec<String>,
+    pub src_ports: Vec<(u16, u16)>,
+    pub dst_ports: Vec<(u16, u16)>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuleConflict {
+    pub rule_a_id: String,
+    pub rule_a_name: String,
+    pub rule_b_id: String,
+    pub rule_b_name: String,
+    pub intersection_desc: String,
+    pub action_conflict: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectionRule {
     pub id: String,
@@ -164,6 +226,10 @@ pub struct DetectionRule {
     pub description: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
+    #[serde(default)]
+    pub current_version: u32,
+    #[serde(default)]
+    pub versions: Vec<RuleVersion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,6 +259,8 @@ pub struct RulesFile {
     pub version: String,
     pub groups: Vec<RuleGroup>,
     pub rules: Vec<DetectionRule>,
+    #[serde(default)]
+    pub rule_stats: Vec<RuleStats>,
 }
 
 impl Default for RulesFile {
@@ -201,6 +269,7 @@ impl Default for RulesFile {
             version: "1.0".to_string(),
             groups: Vec::new(),
             rules: Vec::new(),
+            rule_stats: Vec::new(),
         }
     }
 }

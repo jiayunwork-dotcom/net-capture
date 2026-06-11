@@ -198,6 +198,69 @@ pub fn compile_rule_regex(
     Ok(())
 }
 
+#[tauri::command]
+pub fn get_rule_versions(
+    state: State<'_, AppState>,
+    rule_id: String,
+) -> Result<Option<Vec<RuleVersion>>, String> {
+    let manager = state.rule_manager.lock();
+    Ok(manager.get_rule_versions(&rule_id))
+}
+
+#[tauri::command]
+pub fn rollback_rule_version(
+    state: State<'_, AppState>,
+    rule_id: String,
+    target_version: u32,
+) -> Result<(), String> {
+    let mut manager = state.rule_manager.lock();
+    manager.rollback_rule(&rule_id, target_version)
+}
+
+#[tauri::command]
+pub fn check_rule_conflicts(
+    state: State<'_, AppState>,
+    rule: DetectionRule,
+) -> Result<Vec<RuleConflict>, String> {
+    let manager = state.rule_manager.lock();
+    Ok(manager.check_conflicts(&rule))
+}
+
+#[tauri::command]
+pub fn get_rule_stats(state: State<'_, AppState>) -> Result<Vec<RuleStats>, String> {
+    let manager = state.rule_manager.lock();
+    Ok(manager.get_all_stats())
+}
+
+#[tauri::command]
+pub fn batch_toggle_rules(
+    state: State<'_, AppState>,
+    rule_ids: Vec<String>,
+    enabled: bool,
+) -> Result<(), String> {
+    let mut manager = state.rule_manager.lock();
+    manager.batch_toggle(&rule_ids, enabled)
+}
+
+#[tauri::command]
+pub fn batch_delete_rules(
+    state: State<'_, AppState>,
+    rule_ids: Vec<String>,
+) -> Result<(), String> {
+    let mut manager = state.rule_manager.lock();
+    manager.batch_delete(&rule_ids)
+}
+
+#[tauri::command]
+pub fn batch_move_rules_to_group(
+    state: State<'_, AppState>,
+    rule_ids: Vec<String>,
+    group_id: Option<String>,
+) -> Result<(), String> {
+    let mut manager = state.rule_manager.lock();
+    manager.batch_move_to_group(&rule_ids, group_id.as_deref())
+}
+
 pub fn init_rule_manager(
     app: &tauri::AppHandle,
     state: &State<'_, AppState>,

@@ -91,6 +91,13 @@ pub fn run() {
             rule::commands::get_max_rules,
             rule::commands::get_max_alerts,
             rule::commands::compile_rule_regex,
+            rule::commands::get_rule_versions,
+            rule::commands::rollback_rule_version,
+            rule::commands::check_rule_conflicts,
+            rule::commands::get_rule_stats,
+            rule::commands::batch_toggle_rules,
+            rule::commands::batch_delete_rules,
+            rule::commands::batch_move_rules_to_group,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

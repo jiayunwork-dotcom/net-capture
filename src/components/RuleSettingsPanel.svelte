@@ -4,13 +4,17 @@
   import { open, save } from '@tauri-apps/api/dialog';
   import RuleEditor from './RuleEditor.svelte';
   import RuleItem from './RuleItem.svelte';
+  import VersionHistory from './VersionHistory.svelte';
+  import ConflictDialog from './ConflictDialog.svelte';
+  import RuleStatsPanel from './RuleStatsPanel.svelte';
   import {
-    rules, ruleGroups, maxRules,
+    rules, ruleGroups, maxRules, selectedRuleIds,
     loadRules, addRule, updateRule, deleteRule, toggleRule,
     addRuleGroup, updateRuleGroup, deleteRuleGroup,
     generateRuleId, generateGroupId,
     exportRules, importRules,
-    enabledRulesCount, rulesByGroup
+    enabledRulesCount, rulesByGroup,
+    checkRuleConflicts, batchToggleRules, batchDeleteRules, batchMoveRulesToGroup,
   } from '../stores/rules.js';
 
   export let onClose = () => {};
@@ -38,8 +42,20 @@
   };
 
   let newGroupName = '';
+  let showVersionHistory = false;
+  let versionHistoryRuleId = '';
+  let conflicts = [];
+  let showConflictDialog = false;
+  let pendingSaveRule = null;
+  let pendingIsNew = false;
+  let batchMode = false;
+  let batchAction = '';
+  let showBatchConfirm = false;
+  let batchTargetGroup = null;
 
   $: rulesByGroupValue = $rulesByGroup;
+  $: selectedCount = $selectedRuleIds.length;
+  $: allSelected = $rules.length > 0 && $selectedRuleIds.length === $rules.length;
 
   onMount(() => {
     loadRules();
@@ -102,10 +118,29 @@
       id: isNewRule ? generateRuleId() : editingRule.id,
       created_at: isNewRule ? now : editingRule.created_at,
       updated_at: now,
+      current_version: isNewRule ? 0 : (editingRule.current_version || 0),
+      versions: isNewRule ? [] : (editingRule.versions || []),
     };
 
     try {
-      if (isNewRule) {
+      const detectedConflicts = await checkRuleConflicts(rule);
+      if (detectedConflicts.length > 0) {
+        conflicts = detectedConflicts;
+        pendingSaveRule = rule;
+        pendingIsNew = isNewRule;
+        showConflictDialog = true;
+        return;
+      }
+
+      await doSaveRule(rule, isNewRule);
+    } catch (e) {
+      alert('保存失败: ' + e);
+    }
+  }
+
+  async function doSaveRule(rule, isNew) {
+    try {
+      if (isNew) {
         await addRule(rule);
       } else {
         await updateRule(rule);
@@ -114,6 +149,19 @@
     } catch (e) {
       alert('保存失败: ' + e);
     }
+  }
+
+  function onConflictContinue() {
+    showConflictDialog = false;
+    if (pendingSaveRule) {
+      doSaveRule(pendingSaveRule, pendingIsNew);
+      pendingSaveRule = null;
+    }
+  }
+
+  function onConflictCancel() {
+    showConflictDialog = false;
+    pendingSaveRule = null;
   }
 
   async function handleDeleteRule(rule) {
@@ -130,6 +178,102 @@
       await toggleRule(rule.id, enabled);
     } catch (e) {
       console.error('Toggle error:', e);
+    }
+  }
+
+  function openVersionHistory(rule) {
+    versionHistoryRuleId = rule.id;
+    showVersionHistory = true;
+  }
+
+  function onVersionHistoryClose() {
+    showVersionHistory = false;
+  }
+
+  function onVersionRollback() {
+    loadRules();
+  }
+
+  function toggleSelectRule(ruleId) {
+    if ($selectedRuleIds.includes(ruleId)) {
+      selectedRuleIds.update(ids => ids.filter(id => id !== ruleId));
+    } else {
+      selectedRuleIds.update(ids => [...ids, ruleId]);
+    }
+  }
+
+  function toggleSelectAll() {
+    if (allSelected) {
+      selectedRuleIds.set([]);
+    } else {
+      selectedRuleIds.set($rules.map(r => r.id));
+    }
+  }
+
+  function toggleBatchMode() {
+    batchMode = !batchMode;
+    if (!batchMode) {
+      selectedRuleIds.set([]);
+    }
+  }
+
+  function requestBatchAction(action) {
+    if ($selectedRuleIds.length === 0) return;
+    batchAction = action;
+    showBatchConfirm = true;
+  }
+
+  async function confirmBatchAction() {
+    showBatchConfirm = false;
+    try {
+      switch (batchAction) {
+        case 'enable':
+          await batchToggleRules($selectedRuleIds, true);
+          break;
+        case 'disable':
+          await batchToggleRules($selectedRuleIds, false);
+          break;
+        case 'delete':
+          await batchDeleteRules($selectedRuleIds);
+          break;
+        case 'move':
+          await batchMoveRulesToGroup($selectedRuleIds, batchTargetGroup);
+          break;
+        case 'export':
+          await handleBatchExport();
+          break;
+      }
+      selectedRuleIds.set([]);
+      batchMode = false;
+    } catch (e) {
+      alert('批量操作失败: ' + e);
+    }
+  }
+
+  function getBatchConfirmMessage() {
+    const count = $selectedRuleIds.length;
+    switch (batchAction) {
+      case 'enable': return `确定要启用选中的 ${count} 条规则吗？`;
+      case 'disable': return `确定要禁用选中的 ${count} 条规则吗？`;
+      case 'delete': return `确定要删除选中的 ${count} 条规则吗？此操作不可撤销！`;
+      case 'move': return `确定要将选中的 ${count} 条规则移动到指定分组吗？`;
+      case 'export': return `确定要导出选中的 ${count} 条规则吗？`;
+      default: return '';
+    }
+  }
+
+  async function handleBatchExport() {
+    try {
+      const filePath = await save({
+        filters: [{ name: 'JSON', extensions: ['json'] }],
+        defaultPath: 'detection_rules.json',
+      });
+      if (filePath) {
+        await exportRules(filePath, $selectedRuleIds);
+        alert('导出成功');
+      }
+    } catch (e) {
+      alert('导出失败: ' + e);
     }
   }
 
@@ -235,6 +379,9 @@
     <button class:active={activeTab === 'groups'} on:click={() => activeTab = 'groups'}>
       分组管理
     </button>
+    <button class:active={activeTab === 'stats'} on:click={() => activeTab = 'stats'}>
+      触发统计
+    </button>
   </div>
 
   {#if activeTab === 'rules'}
@@ -242,6 +389,9 @@
       <div class="section-toolbar">
         <div class="toolbar-left">
           <button class="btn-primary" on:click={openNewRule}>+ 新建规则</button>
+          <button class="btn-secondary" on:click={toggleBatchMode}>
+            {batchMode ? '退出多选' : '☑ 多选'}
+          </button>
           <span class="rule-count">
             {$rules.length} / {$maxRules} 条
             <span class="enabled">({$enabledRulesCount} 启用)</span>
@@ -253,7 +403,34 @@
         </div>
       </div>
 
+      {#if batchMode && selectedCount > 0}
+        <div class="batch-toolbar">
+          <span class="batch-count">已选 {selectedCount} 条</span>
+          <button class="btn-batch" on:click={() => requestBatchAction('enable')}>批量启用</button>
+          <button class="btn-batch" on:click={() => requestBatchAction('disable')}>批量禁用</button>
+          <button class="btn-batch danger" on:click={() => requestBatchAction('delete')}>批量删除</button>
+          <select bind:value={batchTargetGroup} class="group-select">
+            <option value={null}>移动到分组...</option>
+            <option value="">未分组</option>
+            {#each $ruleGroups as g}
+              <option value={g.id}>{g.name}</option>
+            {/each}
+          </select>
+          <button class="btn-batch" on:click={() => requestBatchAction('move')}>移动</button>
+          <button class="btn-batch" on:click={() => requestBatchAction('export')}>导出选中</button>
+        </div>
+      {/if}
+
       <div class="rules-list">
+        {#if batchMode}
+          <div class="select-all-row">
+            <label class="checkbox-label">
+              <input type="checkbox" checked={allSelected} on:change={toggleSelectAll} />
+              全选
+            </label>
+          </div>
+        {/if}
+
         {#if $ruleGroups.length > 0}
           {#each $ruleGroups as group}
             {#if rulesByGroupValue[group.id] && rulesByGroupValue[group.id].rules.length > 0}
@@ -263,12 +440,29 @@
                   <span class="group-count">{rulesByGroupValue[group.id].rules.length} 条</span>
                 </div>
                 {#each rulesByGroupValue[group.id].rules as rule}
-                  <RuleItem
-                    rule={rule}
-                    on:edit={() => openEditRule(rule)}
-                    on:delete={() => handleDeleteRule(rule)}
-                    on:toggle={(e) => handleToggleRule(rule, e.detail)}
-                  />
+                  <div class="rule-item-wrapper">
+                    {#if batchMode}
+                      <input
+                        type="checkbox"
+                        checked={$selectedRuleIds.includes(rule.id)}
+                        on:change={() => toggleSelectRule(rule.id)}
+                        class="rule-checkbox"
+                      />
+                    {/if}
+                    <div class="rule-item-flex">
+                      <RuleItem
+                        rule={rule}
+                        on:edit={() => openEditRule(rule)}
+                        on:delete={() => handleDeleteRule(rule)}
+                        on:toggle={(e) => handleToggleRule(rule, e.detail)}
+                      />
+                    </div>
+                    {#if !batchMode}
+                      <button class="btn-history" on:click={() => openVersionHistory(rule)} title="历史版本">
+                        📜
+                      </button>
+                    {/if}
+                  </div>
                 {/each}
               </div>
             {/if}
@@ -282,12 +476,29 @@
               <span class="group-count">{rulesByGroupValue['_ungrouped'].rules.length} 条</span>
             </div>
             {#each rulesByGroupValue['_ungrouped'].rules as rule}
-              <RuleItem
-                rule={rule}
-                on:edit={() => openEditRule(rule)}
-                on:delete={() => handleDeleteRule(rule)}
-                on:toggle={(e) => handleToggleRule(rule, e.detail)}
-              />
+              <div class="rule-item-wrapper">
+                {#if batchMode}
+                  <input
+                    type="checkbox"
+                    checked={$selectedRuleIds.includes(rule.id)}
+                    on:change={() => toggleSelectRule(rule.id)}
+                    class="rule-checkbox"
+                  />
+                {/if}
+                <div class="rule-item-flex">
+                  <RuleItem
+                    rule={rule}
+                    on:edit={() => openEditRule(rule)}
+                    on:delete={() => handleDeleteRule(rule)}
+                    on:toggle={(e) => handleToggleRule(rule, e.detail)}
+                  />
+                </div>
+                {#if !batchMode}
+                  <button class="btn-history" on:click={() => openVersionHistory(rule)} title="历史版本">
+                    📜
+                  </button>
+                {/if}
+              </div>
             {/each}
           </div>
         {/if}
@@ -332,6 +543,10 @@
           </div>
         {/if}
       </div>
+    </div>
+  {:else if activeTab === 'stats'}
+    <div class="stats-section">
+      <RuleStatsPanel />
     </div>
   {/if}
 </div>
@@ -439,8 +654,42 @@
       </div>
 
       <div class="dialog-footer">
+        {#if !isNewRule && editingRule}
+          <button class="btn-version" on:click={() => openVersionHistory(editingRule)}>📜 历史版本</button>
+        {/if}
+        <div class="footer-spacer" />
         <button class="btn-cancel" on:click={closeEditor}>取消</button>
         <button class="btn-confirm" on:click={handleSaveRule}>保存</button>
+      </div>
+    </div>
+  </div>
+{/if}
+
+{#if showVersionHistory}
+  <VersionHistory
+    ruleId={versionHistoryRuleId}
+    on:close={onVersionHistoryClose}
+    on:rollback={onVersionRollback}
+  />
+{/if}
+
+{#if showConflictDialog}
+  <ConflictDialog
+    {conflicts}
+    on:continue={onConflictContinue}
+    on:cancel={onConflictCancel}
+  />
+{/if}
+
+{#if showBatchConfirm}
+  <div class="confirm-modal" on:click|self={() => showBatchConfirm = false}>
+    <div class="confirm-dialog">
+      <div class="confirm-body">
+        <p>{getBatchConfirmMessage()}</p>
+      </div>
+      <div class="confirm-footer">
+        <button class="btn-cancel" on:click={() => showBatchConfirm = false}>取消</button>
+        <button class="btn-confirm" on:click={confirmBatchAction}>确定</button>
       </div>
     </div>
   </div>
@@ -508,7 +757,7 @@
     border-bottom-color: #4fc3f7;
   }
 
-  .rules-section, .groups-section {
+  .rules-section, .groups-section, .stats-section {
     flex: 1;
     overflow-y: auto;
     padding: 16px;
@@ -563,6 +812,97 @@
 
   .rule-count .enabled {
     color: #4caf50;
+  }
+
+  .batch-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: #2d2d2d;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    margin-bottom: 12px;
+  }
+
+  .batch-count {
+    font-size: 12px;
+    color: #4fc3f7;
+    font-weight: 500;
+    margin-right: 8px;
+  }
+
+  .btn-batch {
+    padding: 5px 10px;
+    background: #3a3a3a;
+    color: #ccc;
+    border: 1px solid #555;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 11px;
+  }
+
+  .btn-batch:hover {
+    background: #4a4a4a;
+  }
+
+  .btn-batch.danger {
+    color: #ef5350;
+    border-color: #ef5350;
+  }
+
+  .btn-batch.danger:hover {
+    background: rgba(239, 83, 80, 0.15);
+  }
+
+  .group-select {
+    padding: 5px 8px;
+    background: #1e1e1e;
+    color: #ccc;
+    border: 1px solid #555;
+    border-radius: 3px;
+    font-size: 11px;
+    max-width: 140px;
+  }
+
+  .select-all-row {
+    padding: 8px 14px;
+    background: #2d2d2d;
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    margin-bottom: 8px;
+  }
+
+  .rule-item-wrapper {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .rule-checkbox {
+    margin-left: 10px;
+    cursor: pointer;
+    width: 16px;
+    height: 16px;
+  }
+
+  .rule-item-flex {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .btn-history {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 4px 6px;
+    opacity: 0.5;
+    transition: opacity 0.2s;
+  }
+
+  .btn-history:hover {
+    opacity: 1;
   }
 
   .rules-list {
@@ -819,10 +1159,29 @@
   .dialog-footer {
     display: flex;
     justify-content: flex-end;
+    align-items: center;
     gap: 10px;
     padding: 14px 20px;
     background: #252525;
     border-top: 1px solid #3a3a3a;
+  }
+
+  .footer-spacer {
+    flex: 1;
+  }
+
+  .btn-version {
+    padding: 8px 16px;
+    background: #3a3a3a;
+    color: #4fc3f7;
+    border: 1px solid #4fc3f7;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+
+  .btn-version:hover {
+    background: rgba(79, 195, 247, 0.15);
   }
 
   .btn-cancel {
@@ -851,5 +1210,43 @@
 
   .btn-confirm:hover {
     background: #1976d2;
+  }
+
+  .confirm-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 3000;
+  }
+
+  .confirm-dialog {
+    width: 420px;
+    background: #1e1e1e;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid #3a3a3a;
+  }
+
+  .confirm-body {
+    padding: 24px;
+    text-align: center;
+  }
+
+  .confirm-body p {
+    margin: 0;
+    font-size: 14px;
+    color: #e0e0e0;
+  }
+
+  .confirm-footer {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    padding: 16px;
+    background: #252525;
+    border-top: 1px solid #3a3a3a;
   }
 </style>
