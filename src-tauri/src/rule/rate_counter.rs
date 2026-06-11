@@ -117,9 +117,15 @@ impl RateCounterManager {
         self.counters.get_mut(&key).unwrap()
     }
 
-    pub fn record_packet(&mut self, src_ip: &str, timestamp_secs: u64) {
-        for counter in self.counters.values_mut() {
-            counter.record(Some(src_ip), timestamp_secs);
+    pub fn record_packet(&mut self, src_ip: &str, dst_ip: &str, timestamp_secs: u64) {
+        for (key, counter) in self.counters.iter_mut() {
+            let (_, per_ip) = key;
+            if *per_ip {
+                counter.record(Some(src_ip), timestamp_secs);
+                counter.record(Some(dst_ip), timestamp_secs);
+            } else {
+                counter.record(None, timestamp_secs);
+            }
         }
     }
 

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::collections::{VecDeque, HashMap};
 use crossbeam_channel::{Sender, Receiver, bounded};
 use pcap::{Capture, Device, PacketCodec};
-use crate::models::{PacketMetadata, RawPacket, CaptureStatus, PacketMark, MarkLevel};
+use crate::models::{PacketMetadata, RawPacket, CaptureStatus, PacketMark, MarkLevel, RulePacketEvent};
 use crate::protocol;
 use crate::session::SessionTracker;
 use crate::stats::StatsCollector;
@@ -23,6 +23,7 @@ pub struct CaptureEngine {
     stop_flag: Arc<AtomicBool>,
     tx: Option<Sender<CaptureEvent>>,
     rx: Option<Receiver<CaptureEvent>>,
+    rule_tx: Option<Sender<RulePacketEvent>>,
 }
 
 pub enum CaptureEvent {
@@ -59,7 +60,12 @@ impl CaptureEngine {
             stop_flag: Arc::new(AtomicBool::new(false)),
             tx: Some(tx),
             rx: Some(rx),
+            rule_tx: None,
         }
+    }
+
+    pub fn set_rule_sender(&mut self, tx: Sender<RulePacketEvent>) {
+        self.rule_tx = Some(tx);
     }
 
     pub fn start_capture(
@@ -105,6 +111,7 @@ impl CaptureEngine {
         let packet_counter = self.packet_counter.clone();
         let is_capturing = self.is_capturing.clone();
         let tx = self.tx.clone().unwrap();
+        let rule_tx = self.rule_tx.clone();
 
         let handle = std::thread::Builder::new()
             .name("capture-thread".into())
@@ -137,8 +144,12 @@ impl CaptureEngine {
                         stats.record_packet(&meta);
                     }
 
-                    if tx.send(CaptureEvent::NewPacket(meta, raw_data)).is_err() {
+                    if tx.send(CaptureEvent::NewPacket(meta.clone(), raw_data.clone())).is_err() {
                         break;
+                    }
+
+                    if let Some(ref rtx) = rule_tx {
+                        let _ = rtx.try_send(RulePacketEvent { meta, raw_data });
                     }
                 }
 

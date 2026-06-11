@@ -2,17 +2,13 @@ use std::sync::Arc;
 use std::collections::VecDeque;
 use parking_lot::Mutex;
 use crossbeam_channel::{Sender, Receiver, bounded};
-use crate::models::{PacketMetadata, RawPacket};
+use crate::models::{PacketMetadata, RawPacket, RulePacketEvent};
 use super::models::*;
 use super::engine::RuleEngine;
 use super::actions::AlertActionExecutor;
 use super::persistence;
 
 pub const MAX_ALERTS: usize = 50_000;
-
-pub enum RuleManagerEvent {
-    NewPacket(PacketMetadata, Vec<u8>),
-}
 
 pub struct RuleManager {
     rules: Vec<DetectionRule>,
@@ -21,8 +17,8 @@ pub struct RuleManager {
     rule_engine: Arc<Mutex<RuleEngine>>,
     action_executor: Arc<Mutex<AlertActionExecutor>>,
     app_data_dir: Option<std::path::PathBuf>,
-    tx: Option<Sender<RuleManagerEvent>>,
-    rx: Option<Receiver<RuleManagerEvent>>,
+    tx: Option<Sender<RulePacketEvent>>,
+    rx: Option<Receiver<RulePacketEvent>>,
     worker_handle: Option<std::thread::JoinHandle<()>>,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
     alert_tx: Option<crossbeam_channel::Sender<AlertRecord>>,
@@ -31,8 +27,8 @@ pub struct RuleManager {
 
 impl RuleManager {
     pub fn new() -> Self {
-        let (tx, rx) = bounded(10000);
-        let (alert_tx, alert_rx) = bounded(1000);
+        let (tx, rx) = bounded(100000);
+        let (alert_tx, alert_rx) = bounded(5000);
 
         Self {
             rules: Vec::new(),
@@ -52,6 +48,11 @@ impl RuleManager {
 
     pub fn set_app_data_dir(&mut self, path: std::path::PathBuf) {
         self.app_data_dir = Some(path);
+    }
+
+    pub fn set_app_handle(&mut self, handle: tauri::AppHandle) {
+        let mut executor = self.action_executor.lock();
+        executor.set_app_handle(handle);
     }
 
     pub fn set_capture_engine(&mut self, engine: Arc<Mutex<crate::capture::CaptureEngine>>) {
@@ -284,8 +285,12 @@ impl RuleManager {
 
     pub fn submit_packet(&self, meta: PacketMetadata, raw_data: Vec<u8>) {
         if let Some(ref tx) = self.tx {
-            let _ = tx.send(RuleManagerEvent::NewPacket(meta, raw_data));
+            let _ = tx.try_send(RulePacketEvent { meta, raw_data });
         }
+    }
+
+    pub fn get_sender(&self) -> Option<Sender<RulePacketEvent>> {
+        self.tx.clone()
     }
 
     pub fn drain_new_alerts(&mut self) -> Vec<AlertRecord> {
@@ -329,7 +334,7 @@ impl Default for RuleManager {
 }
 
 fn worker_loop(
-    rx: Receiver<RuleManagerEvent>,
+    rx: Receiver<RulePacketEvent>,
     stop_flag: Arc<std::sync::atomic::AtomicBool>,
     alert_tx: crossbeam_channel::Sender<AlertRecord>,
     rule_engine: Arc<Mutex<RuleEngine>>,
@@ -337,7 +342,10 @@ fn worker_loop(
 ) {
     while !stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
         match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-            Ok(RuleManagerEvent::NewPacket(meta, raw_data)) => {
+            Ok(event) => {
+                let meta = event.meta;
+                let raw_data = event.raw_data;
+
                 let raw_packet = RawPacket {
                     timestamp_secs: meta.timestamp_secs,
                     timestamp_micros: meta.timestamp_micros,
@@ -346,6 +354,7 @@ fn worker_loop(
 
                 let matched_rules = {
                     let mut engine = rule_engine.lock();
+                    engine.record_packet_for_rate(&meta);
                     engine.evaluate_packet(&meta, &raw_data, None)
                 };
 

@@ -305,6 +305,11 @@ pub struct RawPacket {
     pub data: Vec<u8>,
 }
 
+pub struct RulePacketEvent {
+    pub meta: PacketMetadata,
+    pub raw_data: Vec<u8>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MarkLevel {

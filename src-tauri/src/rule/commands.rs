@@ -209,11 +209,20 @@ pub fn init_rule_manager(
 
     std::fs::create_dir_all(&app_dir).map_err(|e| e.to_string())?;
 
-    let mut manager = state.rule_manager.lock();
-    manager.set_app_data_dir(app_dir);
-    manager.load_from_disk()?;
-    manager.set_capture_engine(state.capture_engine.clone());
-    manager.start_worker();
+    let rule_sender = {
+        let mut manager = state.rule_manager.lock();
+        manager.set_app_data_dir(app_dir);
+        manager.set_app_handle(app.clone());
+        manager.load_from_disk()?;
+        manager.set_capture_engine(state.capture_engine.clone());
+        manager.start_worker();
+        manager.get_sender()
+    };
+
+    if let Some(sender) = rule_sender {
+        let mut engine = state.capture_engine.lock();
+        engine.set_rule_sender(sender);
+    }
 
     Ok(())
 }

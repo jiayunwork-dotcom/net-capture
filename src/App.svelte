@@ -1,7 +1,8 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { invoke } from '@tauri-apps/api/tauri';
   import { open, save } from '@tauri-apps/api/dialog';
+  import { listen } from '@tauri-apps/api/event';
   import InterfaceSelector from './components/InterfaceSelector.svelte';
   import PacketList from './components/PacketList.svelte';
   import PacketDetail from './components/PacketDetail.svelte';
@@ -29,16 +30,59 @@
   let templates = [];
   let templateNameInput = '';
   let showSaveTemplateDialog = false;
+  let audioCtx = null;
+  let unlistenSound = null;
 
   $: canCompare = $selectedPackets.length === 2;
 
-  onMount(() => {
+  onMount(async () => {
     loadInterfaces();
     loadTemplates();
     loadRules();
     loadAlerts();
     startAlertPolling();
+
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    unlistenSound = await listen('rule-alert-sound', (event) => {
+      playAlertSound(event.payload);
+    });
   });
+
+  onDestroy(() => {
+    if (unlistenSound) {
+      unlistenSound();
+    }
+    if (audioCtx) {
+      audioCtx.close();
+    }
+  });
+
+  function playAlertSound(payload) {
+    if (!audioCtx) return;
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+
+    const priority = payload.priority || 'medium';
+    const freq = priority === 'high' ? 880 : priority === 'medium' ? 660 : 440;
+    const duration = priority === 'high' ? 0.3 : priority === 'medium' ? 0.2 : 0.15;
+
+    const oscillator = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+
+    oscillator.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+
+    oscillator.type = 'sine';
+    oscillator.frequency.setValueAtTime(freq, audioCtx.currentTime);
+
+    gainNode.gain.setValueAtTime(0.3, audioCtx.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+
+    oscillator.start(audioCtx.currentTime);
+    oscillator.stop(audioCtx.currentTime + duration);
+  }
 
   function handleSelectAlertPacket(packetNo) {
     activeTab = 'packets';

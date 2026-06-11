@@ -28,6 +28,10 @@ impl RuleEngine {
         self.rules.sort_by_key(|r| r.priority.order());
     }
 
+    pub fn record_packet_for_rate(&mut self, meta: &PacketMetadata) {
+        self.rate_counters.record_packet(&meta.src_addr, &meta.dst_addr, meta.timestamp_secs);
+    }
+
     pub fn evaluate_packet(
         &mut self,
         meta: &PacketMetadata,
@@ -252,7 +256,6 @@ fn check_rate_limit(
 
     let ts = meta.timestamp_secs;
 
-    rate_counters.record_packet(&ip, ts);
     rate_counters.check_rate(window_secs, threshold, src_ip, &ip, ts)
 }
 
