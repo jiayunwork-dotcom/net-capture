@@ -1,28 +1,100 @@
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::io::{BufRead, BufReader};
 use parking_lot::Mutex;
 use super::models::*;
 use super::ban_list::BanListManager;
 
 const MAX_RESPONSE_LOGS: usize = 5000;
+const RESPONSE_LOGS_FILENAME: &str = "response_logs.json";
 
 pub struct ResponseExecutor {
     logs: Vec<ResponseLogEntry>,
     ban_list: Arc<Mutex<BanListManager>>,
     response_config: Arc<Mutex<ResponseConfig>>,
     cooldown_map: Arc<Mutex<HashMap<String, u64>>>,
+    app_data_dir: Option<PathBuf>,
 }
 
 impl ResponseExecutor {
-    pub fn new(ban_list: Arc<Mutex<BanListManager>>, config: Arc<Mutex<ResponseConfig>>) -> Self {
-        Self {
+    pub fn new(ban_list: Arc<Mutex<BanListManager>>, config: Arc<Mutex<ResponseConfig>>, app_data_dir: Option<PathBuf>) -> Self {
+        let mut executor = Self {
             logs: Vec::new(),
             ban_list,
             response_config: config,
             cooldown_map: Arc::new(Mutex::new(HashMap::new())),
-        }
+            app_data_dir,
+        };
+        executor.load_logs();
+        executor
     }
 
+    pub fn execute_response_chain_async(
+        self_arc: Arc<Mutex<Self>>,
+        rule: DetectionRule,
+        src_addr: String,
+        dst_addr: String,
+        protocol: String,
+        match_summary: String,
+        timestamp_secs: u64,
+    ) {
+        std::thread::spawn(move || {
+            let mut entries: Vec<ResponseLogEntry> = Vec::new();
+
+            if rule.response_actions.is_empty() {
+                return;
+            }
+
+            {
+                let mut executor = self_arc.lock();
+                let cooldown = if rule.cooldown_secs > 0 {
+                    rule.cooldown_secs
+                } else {
+                    let config = executor.response_config.lock();
+                    config.default_cooldown_secs
+                };
+
+                if executor.check_cooldown(&rule.id, timestamp_secs, cooldown) {
+                    let entry = ResponseLogEntry {
+                        id: generate_response_id(),
+                        trigger_time: timestamp_secs,
+                        rule_id: rule.id.clone(),
+                        rule_name: rule.name.clone(),
+                        action_type: "chain".to_string(),
+                        result: ResponseResult::CooldownSkipped,
+                        duration_ms: 0,
+                        detail: Some(format!("冷却中({}s)", cooldown)),
+                    };
+                    executor.add_log(entry);
+                    return;
+                }
+
+                executor.update_cooldown(&rule.id, timestamp_secs);
+            }
+
+            for action in &rule.response_actions {
+                let entry = {
+                    let executor = self_arc.lock();
+                    executor.execute_action(
+                        action,
+                        &rule,
+                        &src_addr,
+                        &dst_addr,
+                        &protocol,
+                        &match_summary,
+                        timestamp_secs,
+                    )
+                };
+                {
+                    let mut executor = self_arc.lock();
+                    executor.add_log(entry);
+                }
+            }
+        });
+    }
+
+    #[allow(dead_code)]
     pub fn execute_response_chain(
         &mut self,
         rule: &DetectionRule,
@@ -294,54 +366,97 @@ impl ResponseExecutor {
             std::time::Duration::from_secs(30)
         };
 
-        let result = std::process::Command::new(path)
-            .args(std::iter::once(resolved_args.as_str()).filter(|s| !s.is_empty()))
-            .output();
+        let args_vec = split_args(&resolved_args);
 
-        let duration_ms = start.elapsed().as_millis() as u64;
-
-        match result {
-            Ok(output) => {
-                if output.status.success() {
-                    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                    ResponseLogEntry {
-                        id: generate_response_id(),
-                        trigger_time: timestamp_secs,
-                        rule_id: rule.id.clone(),
-                        rule_name: rule.name.clone(),
-                        action_type: "script_exec".to_string(),
-                        result: ResponseResult::Success,
-                        duration_ms,
-                        detail: Some(stdout.chars().take(200).collect()),
-                    }
-                } else {
-                    let exit_code = output.status.code().unwrap_or(-1);
-                    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                    ResponseLogEntry {
-                        id: generate_response_id(),
-                        trigger_time: timestamp_secs,
-                        rule_id: rule.id.clone(),
-                        rule_name: rule.name.clone(),
-                        action_type: "script_exec".to_string(),
-                        result: ResponseResult::Failed,
-                        duration_ms,
-                        detail: Some(format!("退出码: {}, stderr: {}", exit_code, stderr.chars().take(200).collect::<String>())),
-                    }
-                }
-            }
+        let mut child = match std::process::Command::new(path)
+            .args(&args_vec)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(child) => child,
             Err(e) => {
-                let is_timeout = start.elapsed() > timeout;
-                ResponseLogEntry {
+                let duration_ms = start.elapsed().as_millis() as u64;
+                return ResponseLogEntry {
                     id: generate_response_id(),
                     trigger_time: timestamp_secs,
                     rule_id: rule.id.clone(),
                     rule_name: rule.name.clone(),
                     action_type: "script_exec".to_string(),
-                    result: if is_timeout { ResponseResult::Timeout } else { ResponseResult::Failed },
+                    result: ResponseResult::Failed,
                     duration_ms,
-                    detail: Some(format!("执行失败: {}", e)),
+                    detail: Some(format!("启动进程失败: {}", e)),
+                };
+            }
+        };
+
+        let child_id = child.id();
+
+        let result = if let Ok(()) = child.wait_timeout(timeout) {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let stdout = child.stdout.take().map(|pipe| {
+                        BufReader::new(pipe).lines().filter_map(|l| l.ok()).collect::<Vec<_>>().join("\n")
+                    }).unwrap_or_default();
+                    let stderr = child.stderr.take().map(|pipe| {
+                        BufReader::new(pipe).lines().filter_map(|l| l.ok()).collect::<Vec<_>>().join("\n")
+                    }).unwrap_or_default();
+
+                    if status.success() {
+                        Ok(stdout)
+                    } else {
+                        let exit_code = status.code().unwrap_or(-1);
+                        Err((
+                            ResponseResult::Failed,
+                            format!("退出码: {}, stderr: {}", exit_code, stderr.chars().take(200).collect::<String>()),
+                        ))
+                    }
+                }
+                _ => {
+                    Err((ResponseResult::Failed, "无法获取进程状态".to_string()))
                 }
             }
+        } else {
+            if child_id > 0 {
+                #[cfg(unix)]
+                {
+                    let _ = unsafe { libc_kill(child_id as i32, libc_sigterm()) };
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    let _ = child.try_wait();
+                    let _ = unsafe { libc_kill(child_id as i32, libc_sigkill()) };
+                }
+                #[cfg(windows)]
+                {
+                    let _ = child.kill();
+                }
+                let _ = child.wait();
+            }
+            Err((ResponseResult::Timeout, format!("执行超时({:?})已终止进程", timeout)))
+        };
+
+        let duration_ms = start.elapsed().as_millis() as u64;
+
+        match result {
+            Ok(stdout) => ResponseLogEntry {
+                id: generate_response_id(),
+                trigger_time: timestamp_secs,
+                rule_id: rule.id.clone(),
+                rule_name: rule.name.clone(),
+                action_type: "script_exec".to_string(),
+                result: ResponseResult::Success,
+                duration_ms,
+                detail: Some(stdout.chars().take(200).collect()),
+            },
+            Err((result_code, detail)) => ResponseLogEntry {
+                id: generate_response_id(),
+                trigger_time: timestamp_secs,
+                rule_id: rule.id.clone(),
+                rule_name: rule.name.clone(),
+                action_type: "script_exec".to_string(),
+                result: result_code,
+                duration_ms,
+                detail: Some(detail),
+            },
         }
     }
 
@@ -364,6 +479,7 @@ impl ResponseExecutor {
             self.logs.drain(0..100);
         }
         self.logs.push(entry);
+        self.save_logs();
     }
 
     pub fn get_logs(&self) -> Vec<ResponseLogEntry> {
@@ -372,6 +488,7 @@ impl ResponseExecutor {
 
     pub fn clear_logs(&mut self) {
         self.logs.clear();
+        self.save_logs();
     }
 
     pub fn filter_logs(&self, rule_name: &str, time_from: Option<u64>, time_to: Option<u64>) -> Vec<ResponseLogEntry> {
@@ -392,6 +509,35 @@ impl ResponseExecutor {
             true
         }).cloned().collect()
     }
+
+    fn logs_file_path(&self) -> Option<PathBuf> {
+        let dir = self.app_data_dir.as_ref()?;
+        Some(dir.join(RESPONSE_LOGS_FILENAME))
+    }
+
+    fn load_logs(&mut self) {
+        if let Some(path) = self.logs_file_path() {
+            if path.exists() {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(mut loaded) = serde_json::from_str::<Vec<ResponseLogEntry>>(&content) {
+                        if loaded.len() > MAX_RESPONSE_LOGS {
+                            let start = loaded.len() - MAX_RESPONSE_LOGS;
+                            loaded = loaded.split_off(start);
+                        }
+                        self.logs = loaded;
+                    }
+                }
+            }
+        }
+    }
+
+    fn save_logs(&self) {
+        if let Some(path) = self.logs_file_path() {
+            if let Ok(content) = serde_json::to_string(&self.logs) {
+                let _ = std::fs::write(&path, content);
+            }
+        }
+    }
 }
 
 fn resolve_template_vars(template: &str, src_ip: &str, dst_ip: &str, protocol: &str, rule_name: &str, timestamp: u64) -> String {
@@ -401,6 +547,90 @@ fn resolve_template_vars(template: &str, src_ip: &str, dst_ip: &str, protocol: &
         .replace("$PROTOCOL", protocol)
         .replace("$RULE_NAME", rule_name)
         .replace("$TIMESTAMP", &timestamp.to_string())
+}
+
+fn split_args(args_str: &str) -> Vec<String> {
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut chars = args_str.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        match c {
+            '\'' if !in_double_quote => {
+                in_single_quote = !in_single_quote;
+            }
+            '"' if !in_single_quote => {
+                in_double_quote = !in_double_quote;
+            }
+            ' ' | '\t' if !in_single_quote && !in_double_quote => {
+                if !current.is_empty() {
+                    args.push(std::mem::take(&mut current));
+                }
+            }
+            '\\' if in_double_quote => {
+                if let Some(&next) = chars.peek() {
+                    match next {
+                        '"' | '\\' | '$' | '`' => {
+                            current.push(next);
+                            chars.next();
+                        }
+                        _ => {
+                            current.push(c);
+                        }
+                    }
+                } else {
+                    current.push(c);
+                }
+            }
+            _ => {
+                current.push(c);
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        args.push(current);
+    }
+
+    args
+}
+
+#[cfg(unix)]
+unsafe fn libc_kill(pid: i32, sig: i32) -> i32 {
+    extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    kill(pid, sig)
+}
+
+#[cfg(unix)]
+fn libc_sigterm() -> i32 { 15 }
+
+#[cfg(unix)]
+fn libc_sigkill() -> i32 { 9 }
+
+trait ChildWaitTimeout {
+    fn wait_timeout(&mut self, timeout: std::time::Duration) -> Result<(), ()>;
+}
+
+impl ChildWaitTimeout for std::process::Child {
+    fn wait_timeout(&mut self, timeout: std::time::Duration) -> Result<(), ()> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match self.try_wait() {
+                Ok(Some(_)) => return Ok(()),
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(());
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                Err(_) => return Err(()),
+            }
+        }
+    }
 }
 
 fn is_path_in_whitelist(path: &str, whitelist: &[String]) -> bool {

@@ -42,7 +42,7 @@ impl RuleManager {
 
         let ban_list = Arc::new(Mutex::new(BanListManager::new()));
         let response_config = Arc::new(Mutex::new(ResponseConfig::default()));
-        let response_executor = Arc::new(Mutex::new(ResponseExecutor::new(ban_list.clone(), response_config.clone())));
+        let response_executor = Arc::new(Mutex::new(ResponseExecutor::new(ban_list.clone(), response_config.clone(), None)));
 
         Self {
             rules: Vec::new(),
@@ -66,7 +66,12 @@ impl RuleManager {
     }
 
     pub fn set_app_data_dir(&mut self, path: std::path::PathBuf) {
-        self.app_data_dir = Some(path);
+        self.app_data_dir = Some(path.clone());
+        self.response_executor = Arc::new(Mutex::new(ResponseExecutor::new(
+            self.ban_list.clone(),
+            self.response_config.clone(),
+            Some(path),
+        )));
     }
 
     pub fn set_app_handle(&mut self, handle: tauri::AppHandle) {
@@ -663,13 +668,13 @@ fn worker_loop(
                     }
 
                     if !rule.response_actions.is_empty() {
-                        let mut resp_exec = response_executor.lock();
-                        resp_exec.execute_response_chain(
-                            &rule,
-                            &meta.src_addr,
-                            &meta.dst_addr,
-                            meta.protocol.as_str(),
-                            &alert.match_summary,
+                        ResponseExecutor::execute_response_chain_async(
+                            response_executor.clone(),
+                            rule.clone(),
+                            meta.src_addr.clone(),
+                            meta.dst_addr.clone(),
+                            meta.protocol.as_str().to_string(),
+                            alert.match_summary.clone(),
                             meta.timestamp_secs,
                         );
                     }
