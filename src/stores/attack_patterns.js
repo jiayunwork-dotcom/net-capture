@@ -1,6 +1,7 @@
 import { writable } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/tauri';
 import { save } from '@tauri-apps/api/dialog';
+import { listen } from '@tauri-apps/api/event';
 
 export const attackPatterns = writable([]);
 export const patternSimResult = writable(null);
@@ -9,6 +10,25 @@ export const showEffectivenessReport = writable(false);
 export const showPatternSimResult = writable(false);
 export const isGeneratingTraffic = writable(false);
 export const isRunningReport = writable(false);
+export const simulationProgress = writable(null);
+export const reportProgress = writable(null);
+
+let unlistenSimProgress = null;
+let unlistenReportProgress = null;
+
+async function ensureSimProgressListener() {
+  if (unlistenSimProgress) return;
+  unlistenSimProgress = await listen('simulation_progress', (event) => {
+    simulationProgress.set(event.payload);
+  });
+}
+
+async function ensureReportProgressListener() {
+  if (unlistenReportProgress) return;
+  unlistenReportProgress = await listen('effectiveness_report_progress', (event) => {
+    reportProgress.set(event.payload);
+  });
+}
 
 export async function loadAttackPatterns(category) {
   try {
@@ -56,7 +76,16 @@ export async function deleteAttackPattern(patternId) {
 
 export async function runPatternAgainstEngine(patternId, targetIp) {
   isGeneratingTraffic.set(true);
+  simulationProgress.set({
+    session_index: 0,
+    total_sessions: 1,
+    current_packet: 0,
+    total_packets: 0,
+    session_id: patternId,
+    session_label: '',
+  });
   try {
+    await ensureSimProgressListener();
     const result = await invoke('run_pattern_against_engine', {
       patternId,
       targetIp: targetIp || null,
@@ -69,12 +98,22 @@ export async function runPatternAgainstEngine(patternId, targetIp) {
     throw e;
   } finally {
     isGeneratingTraffic.set(false);
+    setTimeout(() => {
+      simulationProgress.set(null);
+    }, 500);
   }
 }
 
 export async function generateEffectivenessReport(patternIds, targetIp) {
   isRunningReport.set(true);
+  reportProgress.set({
+    current_pattern: 0,
+    total_patterns: patternIds.length,
+    pattern_id: '',
+    pattern_name: '',
+  });
   try {
+    await ensureReportProgressListener();
     const report = await invoke('generate_rule_effectiveness_report', {
       patternIds,
       targetIp: targetIp || null,
@@ -87,6 +126,9 @@ export async function generateEffectivenessReport(patternIds, targetIp) {
     throw e;
   } finally {
     isRunningReport.set(false);
+    setTimeout(() => {
+      reportProgress.set(null);
+    }, 500);
   }
 }
 

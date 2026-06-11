@@ -1,11 +1,30 @@
 use std::sync::Arc;
 use parking_lot::Mutex;
-use tauri::State;
+use tauri::{State, AppHandle, Manager};
+use serde::Serialize;
 use crate::AppState;
 use crate::replay::patterns::AttackPatternManager;
 use super::models::*;
-use super::engine::{replay_session_packets, build_batch_summary, inject_packets_to_engine};
+use super::engine::{build_batch_summary, inject_packets_to_engine, replay_packets_with_timing};
 use super::generator::generate_traffic;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReplayProgressEvent {
+    pub session_index: u32,
+    pub total_sessions: u32,
+    pub current_packet: u32,
+    pub total_packets: u32,
+    pub session_id: String,
+    pub session_label: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EffectivenessReportProgressEvent {
+    pub current_pattern: u32,
+    pub total_patterns: u32,
+    pub pattern_id: String,
+    pub pattern_name: String,
+}
 
 fn current_timestamp_secs() -> u64 {
     std::time::SystemTime::now()
@@ -62,10 +81,12 @@ pub fn get_session_packets_for_replay(
 
 #[tauri::command]
 pub fn replay_sessions(
+    app: AppHandle,
     state: State<'_, AppState>,
     session_ids: Vec<String>,
 ) -> Result<ReplayBatchSummary, String> {
     let mut results = Vec::new();
+    let total_sessions = session_ids.len() as u32;
 
     let rule_engine_clone = {
         let mut rm = state.rule_manager.lock();
@@ -75,7 +96,7 @@ pub fn replay_sessions(
 
     let mut rule_engine = rule_engine_clone.lock();
 
-    for sid in &session_ids {
+    for (sess_idx, sid) in session_ids.iter().enumerate() {
         let (packets, raw_data) = get_session_packets_for_replay_inner(&state, sid)?;
         let tracker = state.session_tracker.lock();
         let session_info = tracker
@@ -89,7 +110,44 @@ pub fn replay_sessions(
             None => sid.clone(),
         };
 
-        let result = replay_session_packets(sid, &label, packets, raw_data, &mut rule_engine);
+        let total_packets = packets.len();
+        let started_at = current_timestamp_secs();
+
+        let sid_for_cb = sid.clone();
+        let label_for_cb = label.clone();
+        let app_clone = app.clone();
+        let sess_idx_u32 = sess_idx as u32;
+
+        let (matched_rules, response_logs) = replay_packets_with_timing(
+            packets.clone(),
+            raw_data,
+            &mut rule_engine,
+            1.0,
+            move |current, total| {
+                let event = ReplayProgressEvent {
+                    session_index: sess_idx_u32,
+                    total_sessions,
+                    current_packet: current as u32,
+                    total_packets: total as u32,
+                    session_id: sid_for_cb.clone(),
+                    session_label: label_for_cb.clone(),
+                };
+                let _ = app_clone.emit_all("replay_progress", &event);
+            },
+        );
+
+        let finished_at = current_timestamp_secs();
+
+        let result = ReplaySessionResult {
+            session_id: sid.clone(),
+            session_label: label,
+            total_packets: total_packets as u64,
+            processed_packets: total_packets as u64,
+            matched_rules,
+            response_logs,
+            started_at,
+            finished_at,
+        };
         results.push(result);
     }
 
@@ -192,6 +250,7 @@ pub fn generate_simulated_traffic(
 
 #[tauri::command]
 pub fn run_pattern_against_engine(
+    app: AppHandle,
     state: State<'_, AppState>,
     pattern_id: String,
     target_ip: Option<String>,
@@ -212,19 +271,48 @@ pub fn run_pattern_against_engine(
     };
     let mut rule_engine = rule_engine_clone.lock();
 
-    let result = replay_session_packets(
-        &pattern_id,
-        &label,
-        traffic.packets,
+    let total_packets = traffic.packets.len();
+    let started_at = current_timestamp_secs();
+
+    let pattern_id_clone = pattern_id.clone();
+    let label_clone = label.clone();
+    let app_clone = app.clone();
+
+    let (matched_rules, response_logs) = replay_packets_with_timing(
+        traffic.packets.clone(),
         traffic.raw_data,
         &mut rule_engine,
+        1.0,
+        move |current, total| {
+            let event = ReplayProgressEvent {
+                session_index: 0,
+                total_sessions: 1,
+                current_packet: current as u32,
+                total_packets: total as u32,
+                session_id: pattern_id_clone.clone(),
+                session_label: label_clone.clone(),
+            };
+            let _ = app_clone.emit_all("simulation_progress", &event);
+        },
     );
 
-    Ok(result)
+    let finished_at = current_timestamp_secs();
+
+    Ok(ReplaySessionResult {
+        session_id: pattern_id,
+        session_label: label,
+        total_packets: total_packets as u64,
+        processed_packets: total_packets as u64,
+        matched_rules,
+        response_logs,
+        started_at,
+        finished_at,
+    })
 }
 
 #[tauri::command]
 pub fn generate_rule_effectiveness_report(
+    app: AppHandle,
     state: State<'_, AppState>,
     pattern_ids: Vec<String>,
     target_ip: Option<String>,
@@ -232,14 +320,23 @@ pub fn generate_rule_effectiveness_report(
     let mut items = Vec::new();
     let mut detected = 0u64;
     let mut undetected = 0u64;
+    let total_patterns = pattern_ids.len() as u32;
 
-    for pid in &pattern_ids {
+    for (idx, pid) in pattern_ids.iter().enumerate() {
         let pm = state.replay_state.pattern_manager.lock();
         let pattern = match pm.get_pattern(pid) {
             Some(p) => p,
             None => continue,
         };
         drop(pm);
+
+        let event = EffectivenessReportProgressEvent {
+            current_pattern: idx as u32,
+            total_patterns,
+            pattern_id: pattern.id.clone(),
+            pattern_name: pattern.name.clone(),
+        };
+        let _ = app.emit_all("effectiveness_report_progress", &event);
 
         let traffic = generate_traffic(&pattern, target_ip.clone());
 

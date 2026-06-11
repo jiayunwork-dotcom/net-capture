@@ -1,6 +1,7 @@
 import { writable } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/tauri';
 import { save } from '@tauri-apps/api/dialog';
+import { listen } from '@tauri-apps/api/event';
 
 export const replayResults = writable(null);
 export const replayBatchSummary = writable(null);
@@ -8,16 +9,29 @@ export const replayProgress = writable(null);
 export const isReplaying = writable(false);
 export const showReplayResult = writable(false);
 
+let unlistenReplayProgress = null;
+
+async function ensureReplayProgressListener() {
+  if (unlistenReplayProgress) return;
+  unlistenReplayProgress = await listen('replay_progress', (event) => {
+    replayProgress.set(event.payload);
+  });
+}
+
 export async function replaySessions(sessionIds) {
   if (!sessionIds || sessionIds.length === 0) return;
   isReplaying.set(true);
   replayProgress.set({
-    currentSession: 0,
-    totalSessions: sessionIds.length,
-    currentPacket: 0,
-    totalPackets: 0,
+    session_index: 0,
+    total_sessions: sessionIds.length,
+    current_packet: 0,
+    total_packets: 0,
+    session_id: '',
+    session_label: '',
   });
+
   try {
+    await ensureReplayProgressListener();
     const result = await invoke('replay_sessions', { sessionIds });
     replayBatchSummary.set(result);
     replayResults.set(result.per_session_results);
@@ -28,7 +42,9 @@ export async function replaySessions(sessionIds) {
     throw e;
   } finally {
     isReplaying.set(false);
-    replayProgress.set(null);
+    setTimeout(() => {
+      replayProgress.set(null);
+    }, 500);
   }
 }
 

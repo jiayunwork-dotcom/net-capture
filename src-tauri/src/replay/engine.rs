@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::time::Duration;
 use crate::models::PacketMetadata;
 use crate::rule::engine::RuleEngine;
 use crate::rule::models::{DetectionRule, ResponseLogEntry, ResponseResult};
@@ -40,6 +41,71 @@ pub fn inject_packets_to_engine(
                 }
             }
         }
+    }
+
+    let matches: Vec<RuleMatchRecord> = rule_matches.into_values().collect();
+    (matches, response_logs)
+}
+
+pub fn replay_packets_with_timing<F>(
+    packets: Vec<PacketMetadata>,
+    raw_data: Vec<Vec<u8>>,
+    rule_engine: &mut RuleEngine,
+    speed_factor: f64,
+    mut progress_cb: F,
+) -> (Vec<RuleMatchRecord>, Vec<ResponseLogEntry>)
+where
+    F: FnMut(usize, usize),
+{
+    let mut rule_matches: HashMap<String, RuleMatchRecord> = HashMap::new();
+    let mut response_logs: Vec<ResponseLogEntry> = Vec::new();
+    let total = packets.len();
+
+    rule_engine.clear_rate_counters();
+
+    let mut prev_ts_micros: Option<u64> = None;
+
+    for (idx, meta) in packets.iter().enumerate() {
+        let curr_ts_micros = meta.timestamp_secs * 1_000_000 + meta.timestamp_micros as u64;
+
+        if let Some(prev) = prev_ts_micros {
+            if curr_ts_micros > prev {
+                let diff_micros = curr_ts_micros - prev;
+                let sleep_micros = (diff_micros as f64 / speed_factor) as u64;
+                if sleep_micros > 0 {
+                    std::thread::sleep(Duration::from_micros(sleep_micros));
+                }
+            }
+        }
+        prev_ts_micros = Some(curr_ts_micros);
+
+        let raw = raw_data.get(idx).map(|v| v.as_slice()).unwrap_or(&[]);
+
+        rule_engine.record_packet_for_rate(meta);
+        let matched_rules = rule_engine.evaluate_packet(meta, raw, None);
+
+        for rule in matched_rules {
+            let entry = rule_matches
+                .entry(rule.id.clone())
+                .or_insert_with(|| RuleMatchRecord {
+                    rule_id: rule.id.clone(),
+                    rule_name: rule.name.clone(),
+                    trigger_count: 0,
+                    first_packet_no: meta.no,
+                    first_timestamp_secs: meta.timestamp_secs,
+                    first_timestamp_micros: meta.timestamp_micros,
+                });
+            entry.trigger_count += 1;
+
+            if !rule.response_actions.is_empty() {
+                for action in &rule.response_actions {
+                    let log = generate_simulated_response_log(&rule, action, meta);
+                    response_logs.push(log);
+                }
+            }
+        }
+
+        progress_cb(idx + 1, total);
     }
 
     let matches: Vec<RuleMatchRecord> = rule_matches.into_values().collect();

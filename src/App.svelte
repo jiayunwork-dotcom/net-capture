@@ -19,7 +19,7 @@
   import RuleEffectivenessReport from './components/RuleEffectivenessReport.svelte';
   import PatternSimResult from './components/PatternSimResult.svelte';
   import { isReplaying, replayProgress } from './stores/replay.js';
-  import { isGeneratingTraffic, isRunningReport } from './stores/attack_patterns.js';
+  import { isGeneratingTraffic, isRunningReport, simulationProgress, reportProgress } from './stores/attack_patterns.js';
   import { captureStatus, isCapturing, loadInterfaces } from './stores/capture.js';
   import { packets, filteredPackets, loadPacketDetail, selectedPacketNo } from './stores/packets.js';
   import { loadSessions } from './stores/sessions.js';
@@ -301,13 +301,28 @@
           <span class="dropped">丢弃: {$captureStatus.dropped_count}</span>
         {/if}
         {#if $isReplaying}
-          <span class="replay-status">🎬 回放检测中...</span>
+          <span class="replay-status">
+            🎬 回放检测中
+            {#if $replayProgress && $replayProgress.total_packets > 0}
+              ({$replayProgress.session_index + 1}/{$replayProgress.total_sessions} 会话, {$replayProgress.current_packet}/{$replayProgress.total_packets} 包)
+            {/if}
+          </span>
         {/if}
         {#if $isGeneratingTraffic}
-          <span class="replay-status">⚔️ 生成模拟流量中...</span>
+          <span class="replay-status">
+            ⚔️ 攻击模拟中
+            {#if $simulationProgress && $simulationProgress.total_packets > 0}
+              ({$simulationProgress.current_packet}/{$simulationProgress.total_packets} 包)
+            {/if}
+          </span>
         {/if}
         {#if $isRunningReport}
-          <span class="replay-status">📊 生成有效性报告中...</span>
+          <span class="replay-status">
+            📊 有效性报告生成中
+            {#if $reportProgress && $reportProgress.total_patterns > 0}
+              ({$reportProgress.current_pattern + 1}/{$reportProgress.total_patterns} 特征)
+            {/if}
+          </span>
         {/if}
       </span>
       <button
