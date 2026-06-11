@@ -7,6 +7,7 @@
   import VersionHistory from './VersionHistory.svelte';
   import ConflictDialog from './ConflictDialog.svelte';
   import RuleStatsPanel from './RuleStatsPanel.svelte';
+  import BanListPanel from './BanListPanel.svelte';
   import {
     rules, ruleGroups, maxRules, selectedRuleIds,
     loadRules, addRule, updateRule, deleteRule, toggleRule,
@@ -16,6 +17,9 @@
     enabledRulesCount, rulesByGroup,
     checkRuleConflicts, batchToggleRules, batchDeleteRules, batchMoveRulesToGroup,
   } from '../stores/rules.js';
+  import {
+    responseConfig, loadResponseConfig, saveResponseConfig,
+  } from '../stores/response.js';
 
   export let onClose = () => {};
 
@@ -38,7 +42,9 @@
       mark_level: 'warning',
       auto_export: false,
       export_path: '',
-    }
+    },
+    response_actions: [],
+    cooldown_secs: 60,
   };
 
   let newGroupName = '';
@@ -52,6 +58,7 @@
   let batchAction = '';
   let showBatchConfirm = false;
   let batchTargetGroup = null;
+  let editingResponseConfig = null;
 
   $: rulesByGroupValue = $rulesByGroup;
   $: selectedCount = $selectedRuleIds.length;
@@ -59,7 +66,71 @@
 
   onMount(() => {
     loadRules();
+    loadResponseConfig();
+    editingResponseConfig = { ...$responseConfig };
   });
+
+  function addResponseAction(type) {
+    let action;
+    switch (type) {
+      case 'webhook':
+        action = { type: 'webhook', url: '', headers: {}, timeout_secs: 10 };
+        break;
+      case 'ip_ban':
+        action = { type: 'ip_ban', target: 'src', expire_minutes: 60 };
+        break;
+      case 'script_exec':
+        action = { type: 'script_exec', path: '', args_template: '', timeout_secs: 30 };
+        break;
+      default:
+        return;
+    }
+    ruleForm.response_actions = [...ruleForm.response_actions, action];
+  }
+
+  function removeResponseAction(index) {
+    ruleForm.response_actions = ruleForm.response_actions.filter((_, i) => i !== index);
+  }
+
+  function moveResponseAction(index, direction) {
+    const actions = [...ruleForm.response_actions];
+    const newIndex = index + direction;
+    if (newIndex < 0 || newIndex >= actions.length) return;
+    [actions[index], actions[newIndex]] = [actions[newIndex], actions[index]];
+    ruleForm.response_actions = actions;
+  }
+
+  function updateResponseAction(index, field, value) {
+    const actions = [...ruleForm.response_actions];
+    actions[index] = { ...actions[index], [field]: value };
+    ruleForm.response_actions = actions;
+  }
+
+  async function handleSaveResponseConfig() {
+    try {
+      await saveResponseConfig(editingResponseConfig);
+      alert('自动响应配置已保存');
+    } catch (e) {
+      alert('保存失败: ' + e);
+    }
+  }
+
+  function addWhitelistDir() {
+    editingResponseConfig.script_whitelist_dirs = [
+      ...editingResponseConfig.script_whitelist_dirs,
+      '',
+    ];
+  }
+
+  function removeWhitelistDir(index) {
+    editingResponseConfig.script_whitelist_dirs = editingResponseConfig.script_whitelist_dirs.filter((_, i) => i !== index);
+  }
+
+  function updateWhitelistDir(index, value) {
+    const dirs = [...editingResponseConfig.script_whitelist_dirs];
+    dirs[index] = value;
+    editingResponseConfig.script_whitelist_dirs = dirs;
+  }
 
   function openNewRule() {
     isNewRule = true;
@@ -79,7 +150,9 @@
         mark_level: 'warning',
         auto_export: false,
         export_path: '',
-      }
+      },
+      response_actions: [],
+      cooldown_secs: 60,
     };
     showEditor = true;
   }
@@ -382,6 +455,12 @@
     <button class:active={activeTab === 'stats'} on:click={() => activeTab = 'stats'}>
       触发统计
     </button>
+    <button class:active={activeTab === 'ban_list'} on:click={() => activeTab = 'ban_list'}>
+      封禁列表
+    </button>
+    <button class:active={activeTab === 'response_config'} on:click={() => activeTab = 'response_config'}>
+      自动响应设置
+    </button>
   </div>
 
   {#if activeTab === 'rules'}
@@ -548,6 +627,49 @@
     <div class="stats-section">
       <RuleStatsPanel />
     </div>
+  {:else if activeTab === 'ban_list'}
+    <div class="ban-list-section">
+      <BanListPanel />
+    </div>
+  {:else if activeTab === 'response_config'}
+    <div class="response-config-section">
+      {#if editingResponseConfig}
+        <div class="config-form">
+          <div class="form-row">
+            <div class="form-group">
+              <label>默认冷却时间 (秒)</label>
+              <input type="number" bind:value={editingResponseConfig.default_cooldown_secs} min="0" />
+            </div>
+            <div class="form-group">
+              <label>Webhook默认超时 (秒)</label>
+              <input type="number" bind:value={editingResponseConfig.webhook_default_timeout_secs} min="1" />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label>封禁列表文件路径</label>
+            <input type="text" bind:value={editingResponseConfig.ban_list_path} placeholder="ban_list.json" />
+          </div>
+
+          <div class="form-group">
+            <label>脚本白名单目录</label>
+            <div class="whitelist-dirs">
+              {#each editingResponseConfig.script_whitelist_dirs as dir, i}
+                <div class="dir-row">
+                  <input type="text" value={dir} placeholder="输入目录路径..." on:input={(e) => updateWhitelistDir(i, e.target.value)} />
+                  <button class="btn-remove" on:click={() => removeWhitelistDir(i)}>✕</button>
+                </div>
+              {/each}
+              <button class="btn-add-dir" on:click={addWhitelistDir}>+ 添加目录</button>
+            </div>
+          </div>
+
+          <div class="config-actions">
+            <button class="btn-confirm" on:click={handleSaveResponseConfig}>保存配置</button>
+          </div>
+        </div>
+      {/if}
+    </div>
   {/if}
 </div>
 
@@ -650,6 +772,101 @@
               </div>
             </div>
           {/if}
+        </div>
+
+        <div class="form-group">
+          <label>自动响应</label>
+          <div class="response-config-area">
+            <div class="cooldown-row">
+              <label class="inline-label">冷却时间 (秒)</label>
+              <input type="number" bind:value={ruleForm.cooldown_secs} min="0" class="cooldown-input" />
+              <span class="hint">0 = 使用全局默认值</span>
+            </div>
+
+            <div class="response-actions-list">
+              {#each ruleForm.response_actions as action, i}
+                <div class="response-action-item">
+                  <div class="action-header">
+                    <span class="action-type-label">
+                      {action.type === 'webhook' ? '🔗 Webhook' : action.type === 'ip_ban' ? '🚫 IP封禁' : '📜 脚本执行'}
+                    </span>
+                    <div class="action-controls">
+                      <button class="btn-icon" on:click={() => moveResponseAction(i, -1)} disabled={i === 0}>↑</button>
+                      <button class="btn-icon" on:click={() => moveResponseAction(i, 1)} disabled={i === ruleForm.response_actions.length - 1}>↓</button>
+                      <button class="btn-icon danger" on:click={() => removeResponseAction(i)}>✕</button>
+                    </div>
+                  </div>
+
+                  {#if action.type === 'webhook'}
+                    <div class="action-params">
+                      <div class="param-row">
+                        <label>URL</label>
+                        <input type="text" value={action.url} on:input={(e) => updateResponseAction(i, 'url', e.target.value)} placeholder="https://example.com/webhook" />
+                      </div>
+                      <div class="param-row">
+                        <label>超时(秒)</label>
+                        <input type="number" value={action.timeout_secs} on:input={(e) => updateResponseAction(i, 'timeout_secs', parseInt(e.target.value) || 10)} min="1" class="small-input" />
+                      </div>
+                      <div class="param-row">
+                        <label>自定义请求头</label>
+                        <textarea
+                          value={Object.entries(action.headers || {}).map(([k,v]) => `${k}: ${v}`).join('\n')}
+                          on:input={(e) => {
+                            const headers = {};
+                            e.target.value.split('\n').filter(l => l.trim()).forEach(line => {
+                              const idx = line.indexOf(':');
+                              if (idx > 0) headers[line.substring(0, idx).trim()] = line.substring(idx + 1).trim();
+                            });
+                            updateResponseAction(i, 'headers', headers);
+                          }}
+                          placeholder="Authorization: Bearer token"
+                          rows={2}
+                          class="headers-textarea"
+                        />
+                      </div>
+                    </div>
+                  {:else if action.type === 'ip_ban'}
+                    <div class="action-params">
+                      <div class="param-row">
+                        <label>封禁目标</label>
+                        <select value={action.target} on:change={(e) => updateResponseAction(i, 'target', e.target.value)}>
+                          <option value="src">源IP</option>
+                          <option value="dst">目的IP</option>
+                          <option value="either">源或目的IP</option>
+                        </select>
+                      </div>
+                      <div class="param-row">
+                        <label>过期时间(分钟)</label>
+                        <input type="number" value={action.expire_minutes} on:input={(e) => updateResponseAction(i, 'expire_minutes', parseInt(e.target.value) || 0)} min="0" class="small-input" />
+                        <span class="hint">0 = 永久</span>
+                      </div>
+                    </div>
+                  {:else if action.type === 'script_exec'}
+                    <div class="action-params">
+                      <div class="param-row">
+                        <label>脚本路径</label>
+                        <input type="text" value={action.path} on:input={(e) => updateResponseAction(i, 'path', e.target.value)} placeholder="/path/to/script.sh" />
+                      </div>
+                      <div class="param-row">
+                        <label>参数模板</label>
+                        <input type="text" value={action.args_template} on:input={(e) => updateResponseAction(i, 'args_template', e.target.value)} placeholder="$SRC_IP $DST_IP $PROTOCOL $RULE_NAME $TIMESTAMP" />
+                      </div>
+                      <div class="param-row">
+                        <label>超时(秒)</label>
+                        <input type="number" value={action.timeout_secs} on:input={(e) => updateResponseAction(i, 'timeout_secs', parseInt(e.target.value) || 30)} min="1" class="small-input" />
+                      </div>
+                    </div>
+                  {/if}
+                </div>
+              {/each}
+            </div>
+
+            <div class="add-action-row">
+              <button class="btn-add-action" on:click={() => addResponseAction('webhook')}>+ Webhook</button>
+              <button class="btn-add-action" on:click={() => addResponseAction('ip_ban')}>+ IP封禁</button>
+              <button class="btn-add-action" on:click={() => addResponseAction('script_exec')}>+ 脚本执行</button>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -757,10 +974,235 @@
     border-bottom-color: #4fc3f7;
   }
 
-  .rules-section, .groups-section, .stats-section {
+  .rules-section, .groups-section, .stats-section, .ban-list-section, .response-config-section {
     flex: 1;
     overflow-y: auto;
     padding: 16px;
+  }
+
+  .config-form {
+    max-width: 600px;
+  }
+
+  .config-actions {
+    margin-top: 20px;
+    display: flex;
+    justify-content: flex-end;
+  }
+
+  .whitelist-dirs {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .dir-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+  }
+
+  .dir-row input {
+    flex: 1;
+    padding: 6px 10px;
+    background: #1e1e1e;
+    color: #e0e0e0;
+    border: 1px solid #444;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+
+  .btn-remove {
+    background: transparent;
+    border: 1px solid #555;
+    color: #ef5350;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+  }
+
+  .btn-remove:hover {
+    background: rgba(239, 83, 80, 0.15);
+  }
+
+  .btn-add-dir {
+    padding: 6px 12px;
+    background: #3a3a3a;
+    color: #4fc3f7;
+    border: 1px solid #4fc3f7;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+
+  .btn-add-dir:hover {
+    background: rgba(79, 195, 247, 0.15);
+  }
+
+  .response-config-area {
+    border: 1px solid #3a3a3a;
+    border-radius: 6px;
+    padding: 12px;
+    background: #252525;
+  }
+
+  .cooldown-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .inline-label {
+    font-size: 11px;
+    color: #888;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .cooldown-input {
+    width: 80px !important;
+    padding: 6px 8px;
+    background: #1e1e1e;
+    color: #e0e0e0;
+    border: 1px solid #444;
+    border-radius: 4px;
+    font-size: 12px;
+  }
+
+  .hint {
+    font-size: 11px;
+    color: #666;
+  }
+
+  .response-actions-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+
+  .response-action-item {
+    background: #2d2d2d;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    padding: 10px;
+  }
+
+  .action-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 8px;
+  }
+
+  .action-type-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: #4fc3f7;
+  }
+
+  .action-controls {
+    display: flex;
+    gap: 4px;
+  }
+
+  .btn-icon {
+    background: transparent;
+    border: 1px solid #555;
+    color: #aaa;
+    cursor: pointer;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+  }
+
+  .btn-icon:hover {
+    background: #3a3a3a;
+    color: #e0e0e0;
+  }
+
+  .btn-icon.danger {
+    color: #ef5350;
+    border-color: #ef5350;
+  }
+
+  .btn-icon.danger:hover {
+    background: rgba(239, 83, 80, 0.15);
+  }
+
+  .btn-icon:disabled {
+    opacity: 0.3;
+    cursor: not-allowed;
+  }
+
+  .action-params {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .param-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .param-row label {
+    font-size: 11px;
+    color: #888;
+    min-width: 80px;
+    text-transform: none;
+  }
+
+  .param-row input,
+  .param-row select,
+  .param-row textarea {
+    flex: 1;
+    padding: 6px 8px;
+    background: #1e1e1e;
+    color: #e0e0e0;
+    border: 1px solid #444;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: inherit;
+  }
+
+  .param-row input:focus,
+  .param-row select:focus,
+  .param-row textarea:focus {
+    outline: none;
+    border-color: #4fc3f7;
+  }
+
+  .small-input {
+    width: 80px !important;
+    flex: none !important;
+  }
+
+  .headers-textarea {
+    font-family: monospace;
+    resize: vertical;
+  }
+
+  .add-action-row {
+    display: flex;
+    gap: 8px;
+  }
+
+  .btn-add-action {
+    padding: 6px 12px;
+    background: #3a3a3a;
+    color: #4fc3f7;
+    border: 1px solid #4fc3f7;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 11px;
+  }
+
+  .btn-add-action:hover {
+    background: rgba(79, 195, 247, 0.15);
   }
 
   .section-toolbar {

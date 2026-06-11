@@ -23,6 +23,7 @@ pub fn parse_packet_metadata(no: u64, raw: &RawPacket) -> PacketMetadata {
                 tcp_flags,
                 ip_id,
                 fragment_offset,
+                blocked: false,
             }
         }
         Err(_) => PacketMetadata {
@@ -41,6 +42,7 @@ pub fn parse_packet_metadata(no: u64, raw: &RawPacket) -> PacketMetadata {
             tcp_flags: None,
             ip_id: None,
             fragment_offset: None,
+            blocked: false,
         },
     }
 }

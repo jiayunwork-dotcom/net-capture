@@ -287,5 +287,79 @@ pub fn init_rule_manager(
         engine.set_rule_sender(sender);
     }
 
+    {
+        let ban_check = {
+            let rm = state.rule_manager.clone();
+            Arc::new(move |src: &str, dst: &str| -> bool {
+                let mgr = rm.lock();
+                mgr.check_ban_match(src, dst)
+            }) as Arc<dyn Fn(&str, &str) -> bool + Send + Sync>
+        };
+        let mut engine = state.capture_engine.lock();
+        engine.set_ban_check_fn(ban_check);
+    }
+
     Ok(())
+}
+
+use std::sync::Arc;
+
+#[tauri::command]
+pub fn get_response_logs(state: State<'_, AppState>) -> Result<Vec<ResponseLogEntry>, String> {
+    let manager = state.rule_manager.lock();
+    Ok(manager.get_response_logs())
+}
+
+#[tauri::command]
+pub fn get_response_logs_filtered(
+    state: State<'_, AppState>,
+    rule_name: String,
+    time_from: Option<u64>,
+    time_to: Option<u64>,
+) -> Result<Vec<ResponseLogEntry>, String> {
+    let manager = state.rule_manager.lock();
+    Ok(manager.get_response_logs_filtered(&rule_name, time_from, time_to))
+}
+
+#[tauri::command]
+pub fn clear_response_logs(state: State<'_, AppState>) -> Result<(), String> {
+    let manager = state.rule_manager.lock();
+    manager.clear_response_logs();
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_ban_entries(state: State<'_, AppState>) -> Result<Vec<BanEntry>, String> {
+    let manager = state.rule_manager.lock();
+    Ok(manager.get_ban_entries())
+}
+
+#[tauri::command]
+pub fn unban_ip(state: State<'_, AppState>, ip: String) -> Result<(), String> {
+    let manager = state.rule_manager.lock();
+    manager.unban_ip(&ip)
+}
+
+#[tauri::command]
+pub fn cleanup_expired_bans(state: State<'_, AppState>) -> Result<usize, String> {
+    let manager = state.rule_manager.lock();
+    manager.cleanup_expired_bans()
+}
+
+#[tauri::command]
+pub fn clear_all_bans(state: State<'_, AppState>) -> Result<(), String> {
+    let manager = state.rule_manager.lock();
+    manager.clear_all_bans()
+}
+
+#[tauri::command]
+pub fn get_response_config(state: State<'_, AppState>) -> Result<ResponseConfig, String> {
+    let manager = state.rule_manager.lock();
+    Ok(manager.get_response_config())
+}
+
+#[tauri::command]
+pub fn save_response_config(state: State<'_, AppState>, config: ResponseConfig) -> Result<(), String> {
+    let manager = state.rule_manager.lock();
+    manager.save_response_config(config)
 }

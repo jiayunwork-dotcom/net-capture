@@ -27,6 +27,8 @@ pub struct PacketMetadata {
     pub tcp_flags: Option<String>,
     pub ip_id: Option<u16>,
     pub fragment_offset: Option<u16>,
+    #[serde(default)]
+    pub blocked: bool,
 }
 
 impl PacketMetadata {

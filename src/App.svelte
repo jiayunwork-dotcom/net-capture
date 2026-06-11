@@ -13,6 +13,7 @@
   import PacketCompare from './components/PacketCompare.svelte';
   import AlertPanel from './components/AlertPanel.svelte';
   import RuleSettingsPanel from './components/RuleSettingsPanel.svelte';
+  import ResponseLogPanel from './components/ResponseLogPanel.svelte';
   import { captureStatus, isCapturing, loadInterfaces } from './stores/capture.js';
   import { packets, filteredPackets, loadPacketDetail, selectedPacketNo } from './stores/packets.js';
   import { loadSessions } from './stores/sessions.js';
@@ -331,6 +332,9 @@
           <span class="alert-badge">{$alertCount}</span>
         {/if}
       </button>
+      <button class="tab" class:active={activeTab === 'response_log'} on:click={() => activeTab = 'response_log'}>
+        响应日志
+      </button>
     </div>
 
     <div class="content-area">
@@ -351,6 +355,8 @@
         <StatsPanel />
       {:else if activeTab === 'alerts'}
         <AlertPanel onSelectPacket={handleSelectAlertPacket} />
+      {:else if activeTab === 'response_log'}
+        <ResponseLogPanel />
       {/if}
     </div>
   </div>

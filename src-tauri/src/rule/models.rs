@@ -128,6 +128,107 @@ pub enum FlagMatchMode {
     None,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BanTarget {
+    Src,
+    Dst,
+    Either,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ResponseAction {
+    Webhook {
+        url: String,
+        headers: std::collections::HashMap<String, String>,
+        timeout_secs: u64,
+    },
+    IpBan {
+        target: BanTarget,
+        expire_minutes: u64,
+    },
+    ScriptExec {
+        path: String,
+        args_template: String,
+        timeout_secs: u64,
+    },
+}
+
+fn default_cooldown() -> u64 {
+    60
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseConfig {
+    #[serde(default = "default_cooldown")]
+    pub default_cooldown_secs: u64,
+    #[serde(default)]
+    pub script_whitelist_dirs: Vec<String>,
+    #[serde(default = "default_webhook_timeout")]
+    pub webhook_default_timeout_secs: u64,
+    #[serde(default = "default_ban_list_path")]
+    pub ban_list_path: String,
+}
+
+fn default_webhook_timeout() -> u64 {
+    10
+}
+
+fn default_ban_list_path() -> String {
+    "ban_list.json".to_string()
+}
+
+impl Default for ResponseConfig {
+    fn default() -> Self {
+        Self {
+            default_cooldown_secs: 60,
+            script_whitelist_dirs: Vec::new(),
+            webhook_default_timeout_secs: 10,
+            ban_list_path: "ban_list.json".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BanEntry {
+    pub ip: String,
+    pub ban_time: u64,
+    pub rule_id: String,
+    pub rule_name: String,
+    pub expire_minutes: u64,
+}
+
+impl BanEntry {
+    pub fn is_expired(&self, now: u64) -> bool {
+        if self.expire_minutes == 0 {
+            return false;
+        }
+        now > self.ban_time.saturating_add(self.expire_minutes * 60)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResponseResult {
+    Success,
+    Failed,
+    Timeout,
+    CooldownSkipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ResponseLogEntry {
+    pub id: String,
+    pub trigger_time: u64,
+    pub rule_id: String,
+    pub rule_name: String,
+    pub action_type: String,
+    pub result: ResponseResult,
+    pub duration_ms: u64,
+    pub detail: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AlertActions {
     pub system_notification: bool,
@@ -230,6 +331,10 @@ pub struct DetectionRule {
     pub current_version: u32,
     #[serde(default)]
     pub versions: Vec<RuleVersion>,
+    #[serde(default)]
+    pub response_actions: Vec<ResponseAction>,
+    #[serde(default = "default_cooldown")]
+    pub cooldown_secs: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

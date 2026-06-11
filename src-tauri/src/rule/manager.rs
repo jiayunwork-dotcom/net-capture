@@ -9,6 +9,8 @@ use super::engine::RuleEngine;
 use super::actions::AlertActionExecutor;
 use super::persistence;
 use super::conflict;
+use super::response::ResponseExecutor;
+use super::ban_list::BanListManager;
 
 pub const MAX_ALERTS: usize = 50_000;
 const MAX_VERSIONS: usize = 20;
@@ -21,6 +23,9 @@ pub struct RuleManager {
     shared_stats: Arc<Mutex<HashMap<String, RuleStats>>>,
     rule_engine: Arc<Mutex<RuleEngine>>,
     action_executor: Arc<Mutex<AlertActionExecutor>>,
+    response_executor: Arc<Mutex<ResponseExecutor>>,
+    ban_list: Arc<Mutex<BanListManager>>,
+    response_config: Arc<Mutex<ResponseConfig>>,
     app_data_dir: Option<std::path::PathBuf>,
     tx: Option<Sender<RulePacketEvent>>,
     rx: Option<Receiver<RulePacketEvent>>,
@@ -35,6 +40,10 @@ impl RuleManager {
         let (tx, rx) = bounded(100000);
         let (alert_tx, alert_rx) = bounded(5000);
 
+        let ban_list = Arc::new(Mutex::new(BanListManager::new()));
+        let response_config = Arc::new(Mutex::new(ResponseConfig::default()));
+        let response_executor = Arc::new(Mutex::new(ResponseExecutor::new(ban_list.clone(), response_config.clone())));
+
         Self {
             rules: Vec::new(),
             groups: Vec::new(),
@@ -43,6 +52,9 @@ impl RuleManager {
             shared_stats: Arc::new(Mutex::new(HashMap::new())),
             rule_engine: Arc::new(Mutex::new(RuleEngine::new())),
             action_executor: Arc::new(Mutex::new(AlertActionExecutor::new())),
+            response_executor,
+            ban_list,
+            response_config,
             app_data_dir: None,
             tx: Some(tx),
             rx: Some(rx),
@@ -84,6 +96,19 @@ impl RuleManager {
                     });
                 }
             }
+
+            let config_path = dir.join("response_config.json");
+            if config_path.exists() {
+                let content = std::fs::read_to_string(&config_path).map_err(|e| e.to_string())?;
+                let config: ResponseConfig = serde_json::from_str(&content).unwrap_or_default();
+                *self.response_config.lock() = config;
+            }
+
+            let config = self.response_config.lock();
+            let ban_path = dir.join(&config.ban_list_path);
+            drop(config);
+            self.ban_list.lock().set_file_path(ban_path);
+
             self.refresh_engine();
         }
         Ok(())
@@ -466,11 +491,12 @@ impl RuleManager {
         let rule_engine = self.rule_engine.clone();
         let action_executor = self.action_executor.clone();
         let shared_stats = self.shared_stats.clone();
+        let response_executor = self.response_executor.clone();
 
         let handle = std::thread::Builder::new()
             .name("rule-engine-worker".into())
             .spawn(move || {
-                worker_loop(rx, stop_flag, alert_tx, rule_engine, action_executor, shared_stats);
+                worker_loop(rx, stop_flag, alert_tx, rule_engine, action_executor, shared_stats, response_executor);
             })
             .unwrap();
 
@@ -526,6 +552,61 @@ impl RuleManager {
     pub fn max_alerts(&self) -> usize {
         MAX_ALERTS
     }
+
+    pub fn get_response_logs(&self) -> Vec<ResponseLogEntry> {
+        self.response_executor.lock().get_logs()
+    }
+
+    pub fn get_response_logs_filtered(&self, rule_name: &str, time_from: Option<u64>, time_to: Option<u64>) -> Vec<ResponseLogEntry> {
+        self.response_executor.lock().filter_logs(rule_name, time_from, time_to)
+    }
+
+    pub fn clear_response_logs(&self) {
+        self.response_executor.lock().clear_logs();
+    }
+
+    pub fn get_ban_entries(&self) -> Vec<BanEntry> {
+        self.ban_list.lock().get_all_entries()
+    }
+
+    pub fn unban_ip(&self, ip: &str) -> Result<(), String> {
+        self.ban_list.lock().unban(ip)
+    }
+
+    pub fn cleanup_expired_bans(&self) -> Result<usize, String> {
+        self.ban_list.lock().cleanup_expired()
+    }
+
+    pub fn clear_all_bans(&self) -> Result<(), String> {
+        self.ban_list.lock().clear_all()
+    }
+
+    pub fn is_ip_banned(&self, addr: &str) -> bool {
+        self.ban_list.lock().is_banned(addr)
+    }
+
+    pub fn check_ban_match(&self, src_addr: &str, dst_addr: &str) -> bool {
+        self.ban_list.lock().check_ip_match(src_addr, dst_addr)
+    }
+
+    pub fn get_response_config(&self) -> ResponseConfig {
+        self.response_config.lock().clone()
+    }
+
+    pub fn save_response_config(&self, config: ResponseConfig) -> Result<(), String> {
+        *self.response_config.lock() = config.clone();
+
+        if let Some(ref dir) = self.app_data_dir {
+            let config_path = dir.join("response_config.json");
+            let content = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+            std::fs::write(&config_path, content).map_err(|e| e.to_string())?;
+
+            let ban_path = dir.join(&config.ban_list_path);
+            self.ban_list.lock().set_file_path(ban_path);
+        }
+
+        Ok(())
+    }
 }
 
 impl Default for RuleManager {
@@ -541,6 +622,7 @@ fn worker_loop(
     rule_engine: Arc<Mutex<RuleEngine>>,
     action_executor: Arc<Mutex<AlertActionExecutor>>,
     shared_stats: Arc<Mutex<HashMap<String, RuleStats>>>,
+    response_executor: Arc<Mutex<ResponseExecutor>>,
 ) {
     while !stop_flag.load(std::sync::atomic::Ordering::SeqCst) {
         match rx.recv_timeout(std::time::Duration::from_millis(100)) {
@@ -578,6 +660,18 @@ fn worker_loop(
                     {
                         let executor = action_executor.lock();
                         executor.execute_actions(&rule, meta.no, Some(&raw_packet));
+                    }
+
+                    if !rule.response_actions.is_empty() {
+                        let mut resp_exec = response_executor.lock();
+                        resp_exec.execute_response_chain(
+                            &rule,
+                            &meta.src_addr,
+                            &meta.dst_addr,
+                            meta.protocol.as_str(),
+                            &alert.match_summary,
+                            meta.timestamp_secs,
+                        );
                     }
 
                     {

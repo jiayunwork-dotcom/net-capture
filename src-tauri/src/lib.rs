@@ -98,6 +98,15 @@ pub fn run() {
             rule::commands::batch_toggle_rules,
             rule::commands::batch_delete_rules,
             rule::commands::batch_move_rules_to_group,
+            rule::commands::get_response_logs,
+            rule::commands::get_response_logs_filtered,
+            rule::commands::clear_response_logs,
+            rule::commands::get_ban_entries,
+            rule::commands::unban_ip,
+            rule::commands::cleanup_expired_bans,
+            rule::commands::clear_all_bans,
+            rule::commands::get_response_config,
+            rule::commands::save_response_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

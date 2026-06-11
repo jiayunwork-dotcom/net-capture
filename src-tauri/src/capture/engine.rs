@@ -24,6 +24,7 @@ pub struct CaptureEngine {
     tx: Option<Sender<CaptureEvent>>,
     rx: Option<Receiver<CaptureEvent>>,
     rule_tx: Option<Sender<RulePacketEvent>>,
+    ban_check_fn: Option<Arc<dyn Fn(&str, &str) -> bool + Send + Sync>>,
 }
 
 pub enum CaptureEvent {
@@ -61,7 +62,12 @@ impl CaptureEngine {
             tx: Some(tx),
             rx: Some(rx),
             rule_tx: None,
+            ban_check_fn: None,
         }
+    }
+
+    pub fn set_ban_check_fn(&mut self, f: Arc<dyn Fn(&str, &str) -> bool + Send + Sync>) {
+        self.ban_check_fn = Some(f);
     }
 
     pub fn set_rule_sender(&mut self, tx: Sender<RulePacketEvent>) {
@@ -112,6 +118,7 @@ impl CaptureEngine {
         let is_capturing = self.is_capturing.clone();
         let tx = self.tx.clone().unwrap();
         let rule_tx = self.rule_tx.clone();
+        let ban_check_fn = self.ban_check_fn.clone();
 
         let handle = std::thread::Builder::new()
             .name("capture-thread".into())
@@ -132,7 +139,15 @@ impl CaptureEngine {
 
                     let raw_data = raw_pkt.data.clone();
                     let no = packet_counter.fetch_add(1, Ordering::SeqCst);
-                    let meta = protocol::parse_packet_metadata(no, &raw_pkt);
+                    let mut meta = protocol::parse_packet_metadata(no, &raw_pkt);
+
+                    let is_blocked = if let Some(ref check_fn) = ban_check_fn {
+                        check_fn(&meta.src_addr, &meta.dst_addr)
+                    } else {
+                        false
+                    };
+
+                    meta.blocked = is_blocked;
 
                     {
                         let mut tracker = session_tracker.lock();
@@ -148,8 +163,10 @@ impl CaptureEngine {
                         break;
                     }
 
-                    if let Some(ref rtx) = rule_tx {
-                        let _ = rtx.try_send(RulePacketEvent { meta, raw_data });
+                    if !is_blocked {
+                        if let Some(ref rtx) = rule_tx {
+                            let _ = rtx.try_send(RulePacketEvent { meta, raw_data });
+                        }
                     }
                 }
 
