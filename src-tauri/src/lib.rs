@@ -50,6 +50,16 @@ pub fn run() {
             commands::export_pcap,
             commands::import_pcap,
             commands::load_sslkeylog,
+            commands::set_packet_mark,
+            commands::remove_packet_mark,
+            commands::get_packet_mark,
+            commands::get_all_marks,
+            commands::get_tcp_timeline,
+            commands::save_capture_template,
+            commands::load_capture_templates,
+            commands::delete_capture_template,
+            commands::export_templates,
+            commands::import_templates,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

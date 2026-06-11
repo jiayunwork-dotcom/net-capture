@@ -71,3 +71,50 @@ export async function applyDisplayFilter(filterExpr) {
     return false;
   }
 }
+
+export function applyMarkFilter(markFilterType, commentFilterText, marksMap) {
+  return new Promise((resolve) => {
+    filteredPackets.update(current => {
+      if (markFilterType === 'all' && !commentFilterText.trim()) {
+        return current;
+      }
+
+      const result = current.filter(pkt => {
+        const mark = marksMap[pkt.no];
+        const hasMark = !!mark;
+
+        let markMatch = true;
+        switch (markFilterType) {
+          case 'marked':
+            markMatch = hasMark;
+            break;
+          case 'unmarked':
+            markMatch = !hasMark;
+            break;
+          case 'starred':
+            markMatch = hasMark && mark.level === 'starred';
+            break;
+          case 'warning':
+            markMatch = hasMark && mark.level === 'warning';
+            break;
+          case 'important':
+            markMatch = hasMark && mark.level === 'important';
+            break;
+          default:
+            markMatch = true;
+        }
+
+        let commentMatch = true;
+        if (commentFilterText.trim()) {
+          const searchLower = commentFilterText.toLowerCase();
+          commentMatch = hasMark && mark.comment && mark.comment.toLowerCase().includes(searchLower);
+        }
+
+        return markMatch && commentMatch;
+      });
+
+      return result;
+    });
+    resolve(true);
+  });
+}

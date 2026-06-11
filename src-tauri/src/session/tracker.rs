@@ -3,11 +3,15 @@ use crate::models::*;
 use crate::stream::reassembly::TcpReassembler;
 
 const MAX_ACTIVE_SESSIONS: usize = 10_000;
+const MAX_TIMELINE_PACKETS: usize = 5000;
 
 #[derive(Debug)]
 struct SessionEntry {
     info: SessionInfo,
     tcp_reassembler: Option<TcpReassembler>,
+    packet_nos: Vec<u64>,
+    client_addr: String,
+    client_port: u16,
 }
 
 pub struct SessionTracker {
@@ -42,6 +46,7 @@ impl SessionTracker {
                 let ts_diff = (meta.timestamp_secs as i64 - entry.info.duration_ms as i64 / 1000).max(0);
                 entry.info.duration_ms = (entry.info.duration_ms as i64 / 1000 + ts_diff) as u64 * 1000;
                 entry.info.last_packet_no = meta.no;
+                entry.packet_nos.push(meta.no);
 
                 if meta.protocol == ProtocolType::TCP {
                     Self::update_tcp_state(&mut entry.info, meta);
@@ -87,7 +92,13 @@ impl SessionTracker {
                 last_packet_no: meta.no,
             };
 
-            self.sessions.insert(key.clone(), SessionEntry { info, tcp_reassembler: reassembler });
+            self.sessions.insert(key.clone(), SessionEntry {
+                info,
+                tcp_reassembler: reassembler,
+                packet_nos: vec![meta.no],
+                client_addr: meta.src_addr.clone(),
+                client_port: meta.src_port.unwrap_or(0),
+            });
             self.session_order.push(key);
         }
     }
@@ -140,5 +151,19 @@ impl SessionTracker {
         }
         let reverse_key = Self::make_reverse_session_key(meta);
         self.sessions.get(&reverse_key).map(|e| e.info.clone())
+    }
+
+    pub fn get_session_packet_nos(&self, session_id: &str) -> Option<Vec<u64>> {
+        self.sessions.get(session_id).map(|e| e.packet_nos.clone())
+    }
+
+    pub fn get_session_client_info(&self, session_id: &str) -> Option<(String, u16, String, u16)> {
+        let entry = self.sessions.get(session_id)?;
+        Some((
+            entry.client_addr.clone(),
+            entry.client_port,
+            entry.info.dst_addr.clone(),
+            entry.info.dst_port,
+        ))
     }
 }

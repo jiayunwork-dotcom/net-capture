@@ -9,15 +9,27 @@
   import StatsPanel from './components/StatsPanel.svelte';
   import SessionList from './components/SessionList.svelte';
   import TcpStream from './components/TcpStream.svelte';
+  import PacketCompare from './components/PacketCompare.svelte';
   import { captureStatus, isCapturing, loadInterfaces } from './stores/capture.js';
   import { packets, filteredPackets } from './stores/packets.js';
   import { loadSessions } from './stores/sessions.js';
+  import { selectedPackets } from './stores/selection.js';
+  import { loadAllMarks } from './stores/marks.js';
 
   let activeTab = 'packets';
   let detailVisible = true;
+  let showCompare = false;
+  let showTemplateMenu = false;
+
+  let templates = [];
+  let templateNameInput = '';
+  let showSaveTemplateDialog = false;
+
+  $: canCompare = $selectedPackets.length === 2;
 
   onMount(() => {
     loadInterfaces();
+    loadTemplates();
   });
 
   async function handleExport() {
@@ -46,6 +58,7 @@
       try {
         await invoke('import_pcap', { path: filePath });
         loadSessions();
+        loadAllMarks();
       } catch (e) {
         console.error('Import error:', e);
       }
@@ -66,6 +79,112 @@
       }
     }
   }
+
+  function openCompare() {
+    if (canCompare) {
+      showCompare = true;
+    }
+  }
+
+  function closeCompare() {
+    showCompare = false;
+  }
+
+  async function loadTemplates() {
+    try {
+      const result = await invoke('load_capture_templates');
+      templates = result || [];
+    } catch (e) {
+      console.error('Load templates error:', e);
+    }
+  }
+
+  async function applyTemplate(template) {
+    const { invoke: invokeT } = await import('@tauri-apps/api/tauri');
+    const { selectedInterface, bpfFilter, captureMode, startCapture } = await import('./stores/capture.js');
+    selectedInterface.set(template.interface_name);
+    bpfFilter.set(template.bpf_filter);
+    captureMode.set(template.promiscuous ? 'promiscuous' : 'normal');
+    showTemplateMenu = false;
+  }
+
+  async function openSaveTemplateDialog() {
+    templateNameInput = '';
+    showSaveTemplateDialog = true;
+    showTemplateMenu = false;
+  }
+
+  async function saveTemplate() {
+    if (!templateNameInput.trim()) return;
+
+    try {
+      const { get } = await import('svelte/store');
+      const { selectedInterface, bpfFilter, captureMode } = await import('./stores/capture.js');
+
+      const iface = get(selectedInterface);
+      const filter = get(bpfFilter);
+      const promisc = get(captureMode) === 'promiscuous';
+
+      await invoke('save_capture_template', {
+        name: templateNameInput.trim(),
+        interfaceName: iface,
+        bpfFilter: filter,
+        promiscuous: promisc,
+        description: null,
+      });
+
+      await loadTemplates();
+      showSaveTemplateDialog = false;
+    } catch (e) {
+      alert(String(e));
+    }
+  }
+
+  async function deleteTemplate(template) {
+    if (!confirm(`确定删除模板 "${template.name}" 吗？`)) return;
+    try {
+      await invoke('delete_capture_template', { name: template.name });
+      await loadTemplates();
+    } catch (e) {
+      console.error('Delete template error:', e);
+    }
+  }
+
+  async function exportTemplates() {
+    const filePath = await save({
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      defaultPath: 'templates.json',
+    });
+    if (filePath) {
+      try {
+        await invoke('export_templates', { path: filePath });
+      } catch (e) {
+        console.error('Export templates error:', e);
+      }
+    }
+    showTemplateMenu = false;
+  }
+
+  async function importTemplates() {
+    const filePath = await open({
+      filters: [{ name: 'JSON', extensions: ['json'] }],
+      multiple: false,
+    });
+    if (filePath) {
+      try {
+        const count = await invoke('import_templates', { path: filePath });
+        await loadTemplates();
+        alert(`成功导入 ${count} 个模板`);
+      } catch (e) {
+        console.error('Import templates error:', e);
+      }
+    }
+    showTemplateMenu = false;
+  }
+
+  function toggleTemplateMenu() {
+    showTemplateMenu = !showTemplateMenu;
+  }
 </script>
 
 <div class="app">
@@ -73,6 +192,34 @@
     <div class="toolbar-left">
       <span class="app-title">🔍 NetCapture</span>
       <InterfaceSelector />
+      <div class="template-selector">
+        <button class="toolbar-btn template-btn" on:click={toggleTemplateMenu}>
+          📋 模板
+        </button>
+        {#if showTemplateMenu}
+          <div class="template-menu" onclick="event.stopPropagation()">
+            <div class="menu-section">
+              <div class="menu-title">快速加载</div>
+              {#if templates.length === 0}
+                <div class="menu-empty">暂无模板</div>
+              {:else}
+                {#each templates as t (t.name)}
+                  <div class="template-item" on:click={() => applyTemplate(t)}>
+                    <span class="template-name">{t.name}</span>
+                    <button class="template-delete" on:click|stopPropagation={() => deleteTemplate(t)}>✕</button>
+                  </div>
+                {/each}
+              {/if}
+            </div>
+            <div class="menu-separator"></div>
+            <div class="menu-section">
+              <div class="template-action" on:click={openSaveTemplateDialog}>💾 保存当前配置为模板</div>
+              <div class="template-action" on:click={importTemplates}>📥 导入模板</div>
+              <div class="template-action" on:click={exportTemplates}>📤 导出模板</div>
+            </div>
+          </div>
+        {/if}
+      </div>
     </div>
     <div class="toolbar-right">
       <span class="status-text">
@@ -81,6 +228,15 @@
           <span class="dropped">丢弃: {$captureStatus.dropped_count}</span>
         {/if}
       </span>
+      <button
+        class="toolbar-btn compare-btn"
+        class:disabled={!canCompare}
+        disabled={!canCompare}
+        on:click={openCompare}
+        title={canCompare ? '比较选中的两个包' : '请选择恰好两个数据包'}
+      >
+        ⚖️ 比较
+      </button>
       <button class="toolbar-btn" on:click={handleImport} title="导入PCAP">📥 导入</button>
       <button class="toolbar-btn" on:click={handleExport} title="导出PCAP">📤 导出</button>
       <button class="toolbar-btn" on:click={handleLoadKeylog} title="加载SSLKEYLOG">🔐 TLS</button>
@@ -123,7 +279,24 @@
   </div>
 
   <TcpStream />
+  <PacketCompare visible={showCompare} onClose={closeCompare} />
 </div>
+
+{#if showSaveTemplateDialog}
+  <div class="dialog-overlay" on:click={() => showSaveTemplateDialog = false}>
+    <div class="dialog" on:click|stopPropagation>
+      <h3>保存捕获配置模板</h3>
+      <div class="form-group">
+        <label>模板名称</label>
+        <input type="text" bind:value={templateNameInput} placeholder="输入模板名称..." />
+      </div>
+      <div class="dialog-actions">
+        <button class="btn-cancel" on:click={() => showSaveTemplateDialog = false}>取消</button>
+        <button class="btn-confirm" on:click={saveTemplate}>保存</button>
+      </div>
+    </div>
+  </div>
+{/if}
 
 <style>
   :global(*) {
@@ -196,6 +369,97 @@
   .toolbar-btn:hover {
     background: #4a4a4a;
   }
+  .toolbar-btn:disabled,
+  .toolbar-btn.disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .compare-btn {
+    min-width: 70px;
+  }
+  .template-selector {
+    position: relative;
+  }
+  .template-btn {
+    position: relative;
+  }
+  .template-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    background: #2d2d2d;
+    border: 1px solid #555;
+    border-radius: 6px;
+    min-width: 220px;
+    z-index: 100;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.4);
+    overflow: hidden;
+  }
+  .menu-section {
+    padding: 4px 0;
+  }
+  .menu-title {
+    padding: 6px 12px;
+    font-size: 11px;
+    color: #888;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+  .menu-empty {
+    padding: 12px;
+    color: #666;
+    font-size: 12px;
+    text-align: center;
+  }
+  .template-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 6px 12px;
+    cursor: pointer;
+    color: #ccc;
+    font-size: 12px;
+  }
+  .template-item:hover {
+    background: #3a3a3a;
+  }
+  .template-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .template-delete {
+    background: transparent;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 12px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    opacity: 0;
+    transition: opacity 0.2s;
+  }
+  .template-item:hover .template-delete {
+    opacity: 1;
+  }
+  .template-delete:hover {
+    color: #ef5350;
+    background: rgba(239, 83, 80, 0.1);
+  }
+  .menu-separator {
+    height: 1px;
+    background: #444;
+  }
+  .template-action {
+    padding: 8px 12px;
+    cursor: pointer;
+    color: #ccc;
+    font-size: 12px;
+  }
+  .template-action:hover {
+    background: #3a3a3a;
+  }
 
   .main-content {
     flex: 1;
@@ -249,5 +513,84 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  .dialog-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+  }
+  .dialog {
+    background: #2d2d2d;
+    border: 1px solid #555;
+    border-radius: 8px;
+    padding: 20px;
+    min-width: 320px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  }
+  .dialog h3 {
+    color: #eee;
+    margin: 0 0 16px 0;
+    font-size: 15px;
+  }
+  .form-group {
+    margin-bottom: 16px;
+  }
+  .form-group label {
+    display: block;
+    color: #aaa;
+    font-size: 12px;
+    margin-bottom: 6px;
+  }
+  .form-group input[type="text"] {
+    width: 100%;
+    box-sizing: border-box;
+    background: #1e1e1e;
+    color: #e0e0e0;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 6px 10px;
+    font-size: 13px;
+  }
+  .form-group input:focus {
+    outline: none;
+    border-color: #4fc3f7;
+  }
+  .dialog-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+  }
+  .btn-cancel {
+    padding: 6px 16px;
+    background: #3a3a3a;
+    border: 1px solid #555;
+    border-radius: 4px;
+    color: #ccc;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .btn-cancel:hover {
+    background: #444;
+  }
+  .btn-confirm {
+    padding: 6px 16px;
+    background: #1565c0;
+    border: 1px solid #1976d2;
+    border-radius: 4px;
+    color: #fff;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .btn-confirm:hover {
+    background: #1976d2;
   }
 </style>

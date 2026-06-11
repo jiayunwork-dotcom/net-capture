@@ -22,6 +22,11 @@ pub struct PacketMetadata {
     pub protocol: ProtocolType,
     pub length: u32,
     pub summary: String,
+    pub ttl: Option<u8>,
+    pub window_size: Option<u16>,
+    pub tcp_flags: Option<String>,
+    pub ip_id: Option<u16>,
+    pub fragment_offset: Option<u16>,
 }
 
 impl PacketMetadata {
@@ -298,4 +303,76 @@ pub struct RawPacket {
     pub timestamp_secs: u64,
     pub timestamp_micros: u32,
     pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MarkLevel {
+    Starred,
+    Warning,
+    Important,
+}
+
+impl MarkLevel {
+    pub fn as_str(&self) -> &str {
+        match self {
+            MarkLevel::Starred => "starred",
+            MarkLevel::Warning => "warning",
+            MarkLevel::Important => "important",
+        }
+    }
+
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "starred" => Some(MarkLevel::Starred),
+            "warning" => Some(MarkLevel::Warning),
+            "important" => Some(MarkLevel::Important),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PacketMark {
+    pub packet_no: u64,
+    pub level: MarkLevel,
+    pub comment: String,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TcpSequenceEntry {
+    pub packet_no: u64,
+    pub timestamp_secs: u64,
+    pub timestamp_micros: u32,
+    pub direction: bool,
+    pub seq_num: u32,
+    pub ack_num: u32,
+    pub payload_size: u32,
+    pub flags: String,
+    pub is_retransmission: bool,
+    pub window_size: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TcpTimelineData {
+    pub session_id: String,
+    pub client_addr: String,
+    pub client_port: u16,
+    pub server_addr: String,
+    pub server_port: u16,
+    pub entries: Vec<TcpSequenceEntry>,
+    pub is_truncated: bool,
+    pub total_packets: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CaptureTemplate {
+    pub name: String,
+    pub interface_name: String,
+    pub bpf_filter: String,
+    pub promiscuous: bool,
+    pub description: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
 }

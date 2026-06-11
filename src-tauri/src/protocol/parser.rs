@@ -4,7 +4,7 @@ use etherparse::SlicedPacket;
 pub fn parse_packet_metadata(no: u64, raw: &RawPacket) -> PacketMetadata {
     match SlicedPacket::from_ethernet(&raw.data) {
         Ok(packet) => {
-            let (src_addr, src_port, dst_addr, dst_port, protocol, summary) =
+            let (src_addr, src_port, dst_addr, dst_port, protocol, summary, ttl, window_size, tcp_flags, ip_id, fragment_offset) =
                 extract_packet_info(&packet);
 
             PacketMetadata {
@@ -18,6 +18,11 @@ pub fn parse_packet_metadata(no: u64, raw: &RawPacket) -> PacketMetadata {
                 protocol,
                 length: raw.data.len() as u32,
                 summary,
+                ttl,
+                window_size,
+                tcp_flags,
+                ip_id,
+                fragment_offset,
             }
         }
         Err(_) => PacketMetadata {
@@ -31,6 +36,11 @@ pub fn parse_packet_metadata(no: u64, raw: &RawPacket) -> PacketMetadata {
             protocol: ProtocolType::Unknown,
             length: raw.data.len() as u32,
             summary: "Parse error".into(),
+            ttl: None,
+            window_size: None,
+            tcp_flags: None,
+            ip_id: None,
+            fragment_offset: None,
         },
     }
 }
@@ -86,13 +96,18 @@ pub fn parse_packet_detail(raw: &RawPacket) -> PacketDetail {
     }
 }
 
-fn extract_packet_info(packet: &SlicedPacket) -> (String, Option<u16>, String, Option<u16>, ProtocolType, String) {
+fn extract_packet_info(packet: &SlicedPacket) -> (String, Option<u16>, String, Option<u16>, ProtocolType, String, Option<u8>, Option<u16>, Option<String>, Option<u16>, Option<u16>) {
     let mut src_addr = String::new();
     let mut dst_addr = String::new();
     let mut src_port = None;
     let mut dst_port = None;
     let mut protocol = ProtocolType::Unknown;
     let mut summary = String::new();
+    let mut ttl = None;
+    let mut window_size = None;
+    let mut tcp_flags = None;
+    let mut ip_id = None;
+    let mut fragment_offset = None;
 
     if let Some(link) = &packet.link {
         match link {
@@ -110,17 +125,18 @@ fn extract_packet_info(packet: &SlicedPacket) -> (String, Option<u16>, String, O
             etherparse::InternetSlice::Ipv4(ipv4, _exts) => {
                 src_addr = format!("{}", ipv4.source_addr());
                 dst_addr = format!("{}", ipv4.destination_addr());
-                let ttl = ipv4.ttl();
-                let id = ipv4.identification();
+                ttl = Some(ipv4.ttl());
+                ip_id = Some(ipv4.identification());
+                fragment_offset = Some(ipv4.fragments_offset());
                 let df = ipv4.dont_fragment();
                 let mf = ipv4.more_fragments();
-                let frag_offset = ipv4.fragments_offset();
+                let frag_offset_val = ipv4.fragments_offset();
                 summary = format!(
                     "TTL={} ID=0x{:04x} Flags={}{} Offset={}",
-                    ttl, id,
+                    ipv4.ttl(), ipv4.identification(),
                     if df { "DF " } else { "" },
                     if mf { "MF" } else { "" },
-                    frag_offset
+                    frag_offset_val
                 );
 
                 match ipv4.protocol() {
@@ -133,6 +149,7 @@ fn extract_packet_info(packet: &SlicedPacket) -> (String, Option<u16>, String, O
             etherparse::InternetSlice::Ipv6(ipv6, exts) => {
                 src_addr = format!("{}", ipv6.source_addr());
                 dst_addr = format!("{}", ipv6.destination_addr());
+                ttl = Some(ipv6.hop_limit());
                 protocol = ProtocolType::IPv6;
                 summary = format!("HopLimit={}", ipv6.hop_limit());
 
@@ -155,10 +172,12 @@ fn extract_packet_info(packet: &SlicedPacket) -> (String, Option<u16>, String, O
             etherparse::TransportSlice::Tcp(tcp) => {
                 src_port = Some(tcp.source_port());
                 dst_port = Some(tcp.destination_port());
+                window_size = Some(tcp.window_size());
                 let flags = TcpFlags::from_bits(
                     (tcp.fin() as u8) | (tcp.syn() as u8 * 2) | (tcp.rst() as u8 * 4)
                         | (tcp.psh() as u8 * 8) | (tcp.ack() as u8 * 16) | (tcp.urg() as u8 * 32),
                 );
+                tcp_flags = Some(flags.to_string_flags());
                 summary = format!(
                     "{} -> {} Seq={} Ack={} Win={} [{}]",
                     tcp.source_port(),
@@ -220,7 +239,7 @@ fn extract_packet_info(packet: &SlicedPacket) -> (String, Option<u16>, String, O
         }
     }
 
-    (src_addr, src_port, dst_addr, dst_port, protocol, summary)
+    (src_addr, src_port, dst_addr, dst_port, protocol, summary, ttl, window_size, tcp_flags, ip_id, fragment_offset)
 }
 
 fn format_mac(mac: &[u8]) -> String {

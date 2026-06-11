@@ -1,5 +1,11 @@
 <script>
+  import { onMount } from 'svelte';
   import { stats } from '../stores/stats.js';
+  import { sessions, loadSessions } from '../stores/sessions.js';
+  import TcpTimeline from './TcpTimeline.svelte';
+
+  let activeSubTab = 'overview';
+  let selectedTimelineSession = null;
 
   $: protocolData = $stats.protocol_counts || [];
   $: protocolBytes = $stats.protocol_bytes || [];
@@ -9,6 +15,8 @@
   $: topDstIps = $stats.top_dst_ips || [];
   $: topPorts = $stats.top_ports || [];
   $: tcpStates = $stats.tcp_states || [];
+
+  $: tcpSessions = ($sessions || []).filter(s => s.protocol === 'TCP');
 
   $: totalPackets = protocolData.reduce((s, d) => s + d[1], 0);
 
@@ -42,115 +50,162 @@
   }
 
   $: piePaths = pieChartPath(protocolData, 100, 100, 80);
+
+  function selectTimelineSession(session) {
+    selectedTimelineSession = session.id;
+  }
+
+  onMount(() => {
+    loadSessions();
+  });
 </script>
 
 <div class="stats-panel">
-  <div class="stats-grid">
-    <div class="stat-card">
-      <h4>协议分布 (包数)</h4>
-      <div class="chart-area">
-        <svg viewBox="0 0 200 200" width="180" height="180">
-          {#each protocolData as d, i}
-            <path d={pieChartPath([d], 100, 100, 80)} fill={COLORS[i % COLORS.length]} opacity="0.8" />
+  <div class="stats-tabs">
+    <button class="stats-tab {activeSubTab === 'overview' ? 'active' : ''}" on:click={() => activeSubTab = 'overview'}>
+      概览
+    </button>
+    <button class="stats-tab {activeSubTab === 'timeline' ? 'active' : ''}" on:click={() => activeSubTab = 'timeline'}>
+      连接时序
+    </button>
+  </div>
+
+  {#if activeSubTab === 'overview'}
+    <div class="stats-grid">
+      <div class="stat-card">
+        <h4>协议分布 (包数)</h4>
+        <div class="chart-area">
+          <svg viewBox="0 0 200 200" width="180" height="180">
+            {#each protocolData as d, i}
+              <path d={pieChartPath([d], 100, 100, 80)} fill={COLORS[i % COLORS.length]} opacity="0.8" />
+            {/each}
+          </svg>
+          <div class="legend">
+            {#each protocolData as d, i}
+              <div class="legend-item">
+                <span class="legend-color" style="background: {COLORS[i % COLORS.length]}"></span>
+                <span>{d[0]}: {d[1]}</span>
+              </div>
+            {/each}
+          </div>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <h4>协议分布 (字节)</h4>
+        <div class="bar-chart">
+          {#each protocolBytes as d, i}
+            {@const maxVal = Math.max(...protocolBytes.map(x => x[1]), 1)}
+            <div class="bar-row">
+              <span class="bar-label">{d[0]}</span>
+              <div class="bar-track">
+                <div class="bar-fill" style="width: {(d[1] / maxVal) * 100}%; background: {COLORS[i % COLORS.length]}"></div>
+              </div>
+              <span class="bar-value">{formatBytes(d[1])}</span>
+            </div>
           {/each}
-        </svg>
-        <div class="legend">
-          {#each protocolData as d, i}
-            <div class="legend-item">
-              <span class="legend-color" style="background: {COLORS[i % COLORS.length]}"></span>
-              <span>{d[0]}: {d[1]}</span>
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <h4>流量时序 (每秒包数)</h4>
+        <div class="timeline-chart">
+          {#if ppsTimeline.length > 1}
+            {@const maxPps = Math.max(...ppsTimeline.map(d => d[1]), 1)}
+            <svg viewBox="0 0 300 100" width="100%" height="80">
+              <polyline
+                fill="none"
+                stroke="#4fc3f7"
+                stroke-width="2"
+                points={ppsTimeline.map((d, i) => `${(i / (ppsTimeline.length - 1)) * 300},${100 - (d[1] / maxPps) * 90}`).join(' ')}
+              />
+            </svg>
+          {:else}
+            <div class="no-data">暂无数据</div>
+          {/if}
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <h4>Top 源IP</h4>
+        <div class="top-list">
+          {#each topSrcIps as d, i}
+            <div class="top-item">
+              <span class="top-rank">{i + 1}</span>
+              <span class="top-name">{d[0]}</span>
+              <span class="top-count">{d[1]}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <h4>Top 目的IP</h4>
+        <div class="top-list">
+          {#each topDstIps as d, i}
+            <div class="top-item">
+              <span class="top-rank">{i + 1}</span>
+              <span class="top-name">{d[0]}</span>
+              <span class="top-count">{d[1]}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <h4>Top 端口</h4>
+        <div class="top-list">
+          {#each topPorts as d, i}
+            <div class="top-item">
+              <span class="top-rank">{i + 1}</span>
+              <span class="top-name">:{d[0]}</span>
+              <span class="top-count">{d[1]}</span>
+            </div>
+          {/each}
+        </div>
+      </div>
+
+      <div class="stat-card">
+        <h4>TCP连接状态</h4>
+        <div class="top-list">
+          {#each tcpStates as d, i}
+            <div class="top-item">
+              <span class="top-name">{d[0]}</span>
+              <span class="top-count">{d[1]}</span>
             </div>
           {/each}
         </div>
       </div>
     </div>
-
-    <div class="stat-card">
-      <h4>协议分布 (字节)</h4>
-      <div class="bar-chart">
-        {#each protocolBytes as d, i}
-          {@const maxVal = Math.max(...protocolBytes.map(x => x[1]), 1)}
-          <div class="bar-row">
-            <span class="bar-label">{d[0]}</span>
-            <div class="bar-track">
-              <div class="bar-fill" style="width: {(d[1] / maxVal) * 100}%; background: {COLORS[i % COLORS.length]}"></div>
-            </div>
-            <span class="bar-value">{formatBytes(d[1])}</span>
-          </div>
-        {/each}
+  {:else if activeSubTab === 'timeline'}
+    <div class="timeline-tab">
+      <div class="session-selector">
+        <h4>选择 TCP 会话</h4>
+        <div class="session-list">
+          {#if tcpSessions.length === 0}
+            <div class="no-sessions">暂无 TCP 会话</div>
+          {:else}
+            {#each tcpSessions as s (s.id)}
+              <div
+                class="session-item {selectedTimelineSession === s.id ? 'selected' : ''}"
+                on:click={() => selectTimelineSession(s)}
+              >
+                <div class="session-addr">
+                  {s.src_addr}:{s.src_port} → {s.dst_addr}:{s.dst_port}
+                </div>
+                <div class="session-meta">
+                  {s.packet_count} 包 · {formatBytes(s.byte_count)}
+                </div>
+              </div>
+            {/each}
+          {/if}
+        </div>
+      </div>
+      <div class="timeline-chart-area">
+        <TcpTimeline sessionId={selectedTimelineSession} />
       </div>
     </div>
-
-    <div class="stat-card">
-      <h4>流量时序 (每秒包数)</h4>
-      <div class="timeline-chart">
-        {#if ppsTimeline.length > 1}
-          {@const maxPps = Math.max(...ppsTimeline.map(d => d[1]), 1)}
-          <svg viewBox="0 0 300 100" width="100%" height="80">
-            <polyline
-              fill="none"
-              stroke="#4fc3f7"
-              stroke-width="2"
-              points={ppsTimeline.map((d, i) => `${(i / (ppsTimeline.length - 1)) * 300},${100 - (d[1] / maxPps) * 90}`).join(' ')}
-            />
-          </svg>
-        {:else}
-          <div class="no-data">暂无数据</div>
-        {/if}
-      </div>
-    </div>
-
-    <div class="stat-card">
-      <h4>Top 源IP</h4>
-      <div class="top-list">
-        {#each topSrcIps as d, i}
-          <div class="top-item">
-            <span class="top-rank">{i + 1}</span>
-            <span class="top-name">{d[0]}</span>
-            <span class="top-count">{d[1]}</span>
-          </div>
-        {/each}
-      </div>
-    </div>
-
-    <div class="stat-card">
-      <h4>Top 目的IP</h4>
-      <div class="top-list">
-        {#each topDstIps as d, i}
-          <div class="top-item">
-            <span class="top-rank">{i + 1}</span>
-            <span class="top-name">{d[0]}</span>
-            <span class="top-count">{d[1]}</span>
-          </div>
-        {/each}
-      </div>
-    </div>
-
-    <div class="stat-card">
-      <h4>Top 端口</h4>
-      <div class="top-list">
-        {#each topPorts as d, i}
-          <div class="top-item">
-            <span class="top-rank">{i + 1}</span>
-            <span class="top-name">:{d[0]}</span>
-            <span class="top-count">{d[1]}</span>
-          </div>
-        {/each}
-      </div>
-    </div>
-
-    <div class="stat-card">
-      <h4>TCP连接状态</h4>
-      <div class="top-list">
-        {#each tcpStates as d, i}
-          <div class="top-item">
-            <span class="top-name">{d[0]}</span>
-            <span class="top-count">{d[1]}</span>
-          </div>
-        {/each}
-      </div>
-    </div>
-  </div>
+  {/if}
 </div>
 
 <style>
@@ -159,11 +214,38 @@
     overflow-y: auto;
     background: #1e1e1e;
     padding: 8px;
+    display: flex;
+    flex-direction: column;
+  }
+  .stats-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid #444;
+    padding-bottom: 8px;
+  }
+  .stats-tab {
+    padding: 6px 14px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: #888;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .stats-tab:hover {
+    color: #bbb;
+  }
+  .stats-tab.active {
+    color: #4fc3f7;
+    border-color: #4fc3f7;
+    background: rgba(79, 195, 247, 0.1);
   }
   .stats-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: 8px;
+    flex: 1;
   }
   .stat-card {
     background: #2d2d2d;
@@ -269,5 +351,68 @@
     text-align: center;
     padding: 20px;
     font-size: 13px;
+  }
+  .timeline-chart {
+    height: 80px;
+  }
+
+  .timeline-tab {
+    flex: 1;
+    display: flex;
+    gap: 8px;
+    min-height: 0;
+  }
+  .session-selector {
+    width: 280px;
+    background: #2d2d2d;
+    border-radius: 6px;
+    padding: 10px;
+    overflow-y: auto;
+    flex-shrink: 0;
+  }
+  .session-selector h4 {
+    color: #ccc;
+    font-size: 13px;
+    margin: 0 0 8px 0;
+    font-weight: 500;
+  }
+  .session-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .session-item {
+    padding: 8px;
+    background: #3a3a3a;
+    border-radius: 4px;
+    cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .session-item:hover {
+    background: #444;
+  }
+  .session-item.selected {
+    border-color: #4fc3f7;
+    background: rgba(79, 195, 247, 0.1);
+  }
+  .session-addr {
+    font-family: 'Menlo', monospace;
+    font-size: 11px;
+    color: #ddd;
+    margin-bottom: 2px;
+  }
+  .session-meta {
+    font-size: 10px;
+    color: #888;
+  }
+  .no-sessions {
+    color: #666;
+    text-align: center;
+    padding: 20px;
+    font-size: 12px;
+  }
+  .timeline-chart-area {
+    flex: 1;
+    min-width: 0;
   }
 </style>

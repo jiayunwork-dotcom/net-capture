@@ -3,12 +3,13 @@ use std::sync::Arc;
 use std::collections::{VecDeque, HashMap};
 use crossbeam_channel::{Sender, Receiver, bounded};
 use pcap::{Capture, Device, PacketCodec};
-use crate::models::{PacketMetadata, RawPacket, CaptureStatus};
+use crate::models::{PacketMetadata, RawPacket, CaptureStatus, PacketMark, MarkLevel};
 use crate::protocol;
 use crate::session::SessionTracker;
 use crate::stats::StatsCollector;
 
 const MAX_METADATA_COUNT: usize = 500_000;
+const MAX_MARK_COUNT: usize = 10_000;
 
 pub struct CaptureEngine {
     is_capturing: Arc<AtomicBool>,
@@ -17,6 +18,7 @@ pub struct CaptureEngine {
     interface_name: Option<String>,
     metadata_buffer: VecDeque<PacketMetadata>,
     raw_data_store: HashMap<u64, Vec<u8>>,
+    marks: HashMap<u64, PacketMark>,
     capture_handle: Option<std::thread::JoinHandle<()>>,
     stop_flag: Arc<AtomicBool>,
     tx: Option<Sender<CaptureEvent>>,
@@ -52,6 +54,7 @@ impl CaptureEngine {
             interface_name: None,
             metadata_buffer: VecDeque::with_capacity(MAX_METADATA_COUNT),
             raw_data_store: HashMap::new(),
+            marks: HashMap::new(),
             capture_handle: None,
             stop_flag: Arc::new(AtomicBool::new(false)),
             tx: Some(tx),
@@ -173,27 +176,42 @@ impl CaptureEngine {
     }
 
     pub fn drain_new_packets(&mut self) -> Vec<PacketMetadata> {
-        if let Some(rx) = &self.rx {
-            let mut new_packets = Vec::new();
-            while let Ok(event) = rx.try_recv() {
+        let mut new_packets = Vec::new();
+        
+        if self.rx.is_some() {
+            loop {
+                let event = {
+                    let rx = self.rx.as_ref().unwrap();
+                    rx.try_recv()
+                };
+                
                 match event {
-                    CaptureEvent::NewPacket(meta, raw_data) => {
+                    Ok(CaptureEvent::NewPacket(meta, raw_data)) => {
                         let no = meta.no;
                         if self.metadata_buffer.len() >= MAX_METADATA_COUNT {
-                            if let Some(evicted) = self.metadata_buffer.pop_front() {
-                                self.raw_data_store.remove(&evicted.no);
-                            }
+                            self.evict_oldest_unmarked();
                         }
                         self.raw_data_store.insert(no, raw_data);
                         self.metadata_buffer.push_back(meta.clone());
                         new_packets.push(meta);
                     }
-                    CaptureEvent::Error(_) => {}
+                    Ok(CaptureEvent::Error(_)) => {}
+                    Err(_) => break,
                 }
             }
-            new_packets
-        } else {
-            Vec::new()
+        }
+        
+        new_packets
+    }
+
+    fn evict_oldest_unmarked(&mut self) {
+        while let Some(front) = self.metadata_buffer.pop_front() {
+            if !self.marks.contains_key(&front.no) {
+                self.raw_data_store.remove(&front.no);
+                return;
+            } else {
+                self.metadata_buffer.push_back(front);
+            }
         }
     }
 
@@ -207,25 +225,6 @@ impl CaptureEngine {
 
     pub fn get_raw_data(&self, no: u64) -> Option<Vec<u8>> {
         self.raw_data_store.get(&no).cloned()
-    }
-
-    pub fn store_raw_packet(&mut self, no: u64, raw: RawPacket) {
-        if self.metadata_buffer.len() >= MAX_METADATA_COUNT {
-            if let Some(evicted) = self.metadata_buffer.pop_front() {
-                self.raw_data_store.remove(&evicted.no);
-            }
-        }
-        self.raw_data_store.insert(no, raw.data);
-    }
-
-    pub fn store_imported_packet(&mut self, meta: PacketMetadata, raw: RawPacket) {
-        if self.metadata_buffer.len() >= MAX_METADATA_COUNT {
-            if let Some(evicted) = self.metadata_buffer.pop_front() {
-                self.raw_data_store.remove(&evicted.no);
-            }
-        }
-        self.raw_data_store.insert(meta.no, raw.data);
-        self.metadata_buffer.push_back(meta);
     }
 
     pub fn validate_bpf(&self, filter: &str) -> Result<(), String> {
@@ -246,5 +245,66 @@ impl CaptureEngine {
             .map_err(|e| format!("表达式无效: {}", e))?;
 
         Ok(())
+    }
+
+    pub fn set_mark(&mut self, packet_no: u64, level: MarkLevel, comment: String) -> Result<(), String> {
+        if self.marks.len() >= MAX_MARK_COUNT && !self.marks.contains_key(&packet_no) {
+            return Err("标记数量已达上限，请清理旧标记".into());
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mark = PacketMark {
+            packet_no,
+            level,
+            comment: comment.chars().take(200).collect(),
+            created_at: now,
+        };
+
+        self.marks.insert(packet_no, mark);
+        Ok(())
+    }
+
+    pub fn remove_mark(&mut self, packet_no: u64) -> Result<(), String> {
+        self.marks.remove(&packet_no);
+        Ok(())
+    }
+
+    pub fn get_mark(&self, packet_no: u64) -> Option<PacketMark> {
+        self.marks.get(&packet_no).cloned()
+    }
+
+    pub fn get_all_marks(&self) -> Vec<PacketMark> {
+        self.marks.values().cloned().collect()
+    }
+
+    pub fn get_marked_packets(&self) -> Vec<PacketMetadata> {
+        self.metadata_buffer
+            .iter()
+            .filter(|m| self.marks.contains_key(&m.no))
+            .cloned()
+            .collect()
+    }
+
+    pub fn mark_count(&self) -> usize {
+        self.marks.len()
+    }
+
+    pub fn store_raw_packet(&mut self, no: u64, raw: RawPacket) {
+        if self.metadata_buffer.len() >= MAX_METADATA_COUNT {
+            self.evict_oldest_unmarked();
+        }
+        self.raw_data_store.insert(no, raw.data);
+    }
+
+    pub fn store_imported_packet(&mut self, meta: PacketMetadata, raw: RawPacket) {
+        if self.metadata_buffer.len() >= MAX_METADATA_COUNT {
+            self.evict_oldest_unmarked();
+        }
+        self.raw_data_store.insert(meta.no, raw.data);
+        self.metadata_buffer.push_back(meta);
     }
 }
