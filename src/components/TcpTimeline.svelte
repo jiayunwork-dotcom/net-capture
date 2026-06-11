@@ -172,15 +172,15 @@
     return paths;
   })();
 
-  function onMount() {
+  onMount(() => {
     document.addEventListener('mousemove', onDrag);
     document.addEventListener('mouseup', endDrag);
-  }
+  });
 
-  function onDestroy() {
+  onDestroy(() => {
     document.removeEventListener('mousemove', onDrag);
     document.removeEventListener('mouseup', endDrag);
-  }
+  });
 </script>
 
 <div class="tcp-timeline">
