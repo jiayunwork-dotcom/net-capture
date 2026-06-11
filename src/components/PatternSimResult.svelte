@@ -5,6 +5,9 @@
     closePatternSimResult,
   } from '../stores/attack_patterns.js';
   import { exportReplayResult } from '../stores/replay.js';
+  import { loadPacketDetail, selectedPacketNo } from '../stores/packets.js';
+
+  let expandedRules = new Set();
 
   function formatTimestamp(secs, micros) {
     if (!secs) return '-';
@@ -21,6 +24,19 @@
       const ok = await exportReplayResult($patternSimResult);
       if (ok) alert('导出成功');
     }
+  }
+
+  function toggleRuleExpand(ruleId) {
+    if (expandedRules.has(ruleId)) {
+      expandedRules.delete(ruleId);
+    } else {
+      expandedRules.add(ruleId);
+    }
+    expandedRules = new Set(expandedRules);
+  }
+
+  function handlePacketClick(packetNo) {
+    loadPacketDetail(packetNo);
   }
 </script>
 
@@ -67,6 +83,7 @@
             <table class="result-table">
               <thead>
                 <tr>
+                  <th style="width:30px;"></th>
                   <th>规则名称</th>
                   <th>触发次数</th>
                   <th>首次触发包</th>
@@ -76,11 +93,38 @@
               <tbody>
                 {#each $patternSimResult.matched_rules as rule}
                   <tr>
+                    <td>
+                      <button
+                        class="btn-expand"
+                        on:click={() => toggleRuleExpand(rule.rule_id)}
+                        title={expandedRules.has(rule.rule_id) ? '收起' : '展开包列表'}
+                      >
+                        {expandedRules.has(rule.rule_id) ? '▼' : '▶'}
+                      </button>
+                    </td>
                     <td class="rule-name">{rule.rule_name}</td>
                     <td class="count">{rule.trigger_count}</td>
                     <td class="mono">#{rule.first_packet_no}</td>
                     <td>{formatTimestamp(rule.first_timestamp_secs, rule.first_timestamp_micros)}</td>
                   </tr>
+                  {#if expandedRules.has(rule.rule_id) && rule.triggered_packet_nos && rule.triggered_packet_nos.length > 0}
+                    <tr class="packet-row">
+                      <td colspan="5">
+                        <div class="packet-list">
+                          <span class="packet-label">触发包:</span>
+                          {#each rule.triggered_packet_nos as pktNo}
+                            <button
+                              class="packet-btn"
+                              class:active={$selectedPacketNo === pktNo}
+                              on:click={() => handlePacketClick(pktNo)}
+                            >
+                              #{pktNo}
+                            </button>
+                          {/each}
+                        </div>
+                      </td>
+                    </tr>
+                  {/if}
                 {/each}
               </tbody>
             </table>
@@ -222,6 +266,54 @@
   .rule-name { color: #fff; font-weight: 500; }
   .count { color: #ffb74d; font-weight: 600; }
   .mono { font-family: monospace; }
+  .btn-expand {
+    background: transparent;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 10px;
+    padding: 2px 4px;
+    border-radius: 3px;
+  }
+  .btn-expand:hover {
+    color: #4fc3f7;
+    background: #333;
+  }
+  .packet-row td {
+    background: #1a1a2e;
+    border-bottom: 1px solid #2a2a3e;
+    padding: 6px 10px;
+  }
+  .packet-list {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+  }
+  .packet-label {
+    color: #888;
+    font-size: 11px;
+    margin-right: 4px;
+  }
+  .packet-btn {
+    background: #1e3a5f;
+    color: #90caf9;
+    border: 1px solid #2a5080;
+    border-radius: 3px;
+    padding: 1px 6px;
+    cursor: pointer;
+    font-size: 11px;
+    font-family: monospace;
+  }
+  .packet-btn:hover {
+    background: #2a5080;
+    border-color: #4fc3f7;
+  }
+  .packet-btn.active {
+    background: #1565c0;
+    border-color: #4fc3f7;
+    color: #fff;
+  }
   .empty-state {
     padding: 20px;
     text-align: center;

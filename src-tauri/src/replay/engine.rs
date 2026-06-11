@@ -31,8 +31,10 @@ pub fn inject_packets_to_engine(
                     first_packet_no: meta.no,
                     first_timestamp_secs: meta.timestamp_secs,
                     first_timestamp_micros: meta.timestamp_micros,
+                    triggered_packet_nos: Vec::new(),
                 });
             entry.trigger_count += 1;
+            entry.triggered_packet_nos.push(meta.no);
 
             if !rule.response_actions.is_empty() {
                 for action in &rule.response_actions {
@@ -64,20 +66,23 @@ where
     rule_engine.clear_rate_counters();
 
     let mut prev_ts_micros: Option<u64> = None;
+    let no_sleep = speed_factor <= 0.0;
 
     for (idx, meta) in packets.iter().enumerate() {
-        let curr_ts_micros = meta.timestamp_secs * 1_000_000 + meta.timestamp_micros as u64;
+        if !no_sleep {
+            let curr_ts_micros = meta.timestamp_secs * 1_000_000 + meta.timestamp_micros as u64;
 
-        if let Some(prev) = prev_ts_micros {
-            if curr_ts_micros > prev {
-                let diff_micros = curr_ts_micros - prev;
-                let sleep_micros = (diff_micros as f64 / speed_factor) as u64;
-                if sleep_micros > 0 {
-                    std::thread::sleep(Duration::from_micros(sleep_micros));
+            if let Some(prev) = prev_ts_micros {
+                if curr_ts_micros > prev {
+                    let diff_micros = curr_ts_micros - prev;
+                    let sleep_micros = (diff_micros as f64 / speed_factor) as u64;
+                    if sleep_micros > 0 {
+                        std::thread::sleep(Duration::from_micros(sleep_micros));
+                    }
                 }
             }
+            prev_ts_micros = Some(curr_ts_micros);
         }
-        prev_ts_micros = Some(curr_ts_micros);
 
         let raw = raw_data.get(idx).map(|v| v.as_slice()).unwrap_or(&[]);
 
@@ -94,8 +99,10 @@ where
                     first_packet_no: meta.no,
                     first_timestamp_secs: meta.timestamp_secs,
                     first_timestamp_micros: meta.timestamp_micros,
+                    triggered_packet_nos: Vec::new(),
                 });
             entry.trigger_count += 1;
+            entry.triggered_packet_nos.push(meta.no);
 
             if !rule.response_actions.is_empty() {
                 for action in &rule.response_actions {

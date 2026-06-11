@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { sessions, loadSessions } from '../stores/sessions.js';
   import { isCapturing } from '../stores/capture.js';
-  import { replaySessions } from '../stores/replay.js';
+  import { replaySessions, replaySpeed, SPEED_OPTIONS } from '../stores/replay.js';
   import { traceTcpStream } from '../stores/sessions.js';
 
   let sessionPollInterval = null;
@@ -97,7 +97,7 @@
     const ids = Array.from(selectedSessionIds);
     if (ids.length === 0) return;
     try {
-      await replaySessions(ids);
+      await replaySessions(ids, $replaySpeed);
     } catch (e) {
       alert('回放失败: ' + e);
     }
@@ -177,6 +177,14 @@
       style="left: {contextMenu.x}px; top: {contextMenu.y}px;"
       onclick="event.stopPropagation()"
     >
+      <div class="menu-item speed-item">
+        <span>回放速度:</span>
+        <select bind:value={$replaySpeed} class="speed-select">
+          {#each SPEED_OPTIONS as opt}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
+      </div>
       <div class="menu-item" on:click={handleReplaySelected}>
         ▶️ 回放到规则引擎 {selectedCount > 1 ? `(${selectedCount}个会话)` : ''}
       </div>
@@ -301,5 +309,21 @@
   .menu-item:hover {
     background: #3a3a3a;
     color: #fff;
+  }
+  .speed-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    color: #aaa;
+    font-size: 12px;
+  }
+  .speed-select {
+    background: #1e1e1e;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 3px;
+    padding: 2px 6px;
+    font-size: 11px;
   }
 </style>

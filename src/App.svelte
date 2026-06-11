@@ -19,7 +19,7 @@
   import RuleEffectivenessReport from './components/RuleEffectivenessReport.svelte';
   import PatternSimResult from './components/PatternSimResult.svelte';
   import { isReplaying, replayProgress } from './stores/replay.js';
-  import { isGeneratingTraffic, isRunningReport, simulationProgress, reportProgress } from './stores/attack_patterns.js';
+  import { isGeneratingTraffic, isRunningReport, simulationProgress, reportProgress, isGeneratingHeatmap, heatmapProgress } from './stores/attack_patterns.js';
   import { captureStatus, isCapturing, loadInterfaces } from './stores/capture.js';
   import { packets, filteredPackets, loadPacketDetail, selectedPacketNo } from './stores/packets.js';
   import { loadSessions } from './stores/sessions.js';
@@ -321,6 +321,14 @@
             📊 有效性报告生成中
             {#if $reportProgress && $reportProgress.total_patterns > 0}
               ({$reportProgress.current_pattern + 1}/{$reportProgress.total_patterns} 特征)
+            {/if}
+          </span>
+        {/if}
+        {#if $isGeneratingHeatmap}
+          <span class="replay-status">
+            🗺️ 热力图生成中
+            {#if $heatmapProgress && $heatmapProgress.total > 0}
+              ({$heatmapProgress.current + 1}/{$heatmapProgress.total} 特征)
             {/if}
           </span>
         {/if}

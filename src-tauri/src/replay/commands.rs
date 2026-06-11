@@ -26,6 +26,17 @@ pub struct EffectivenessReportProgressEvent {
     pub pattern_name: String,
 }
 
+fn speed_factor_from_label(label: &str) -> f64 {
+    match label {
+        "0.5x" => 0.5,
+        "1x" => 1.0,
+        "2x" => 2.0,
+        "5x" => 5.0,
+        "max" => -1.0,
+        _ => 1.0,
+    }
+}
+
 fn current_timestamp_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -84,7 +95,9 @@ pub fn replay_sessions(
     app: AppHandle,
     state: State<'_, AppState>,
     session_ids: Vec<String>,
+    speed_label: Option<String>,
 ) -> Result<ReplayBatchSummary, String> {
+    let speed = speed_factor_from_label(speed_label.as_deref().unwrap_or("1x"));
     let mut results = Vec::new();
     let total_sessions = session_ids.len() as u32;
 
@@ -122,7 +135,7 @@ pub fn replay_sessions(
             packets.clone(),
             raw_data,
             &mut rule_engine,
-            1.0,
+            speed,
             move |current, total| {
                 let event = ReplayProgressEvent {
                     session_index: sess_idx_u32,
@@ -254,7 +267,9 @@ pub fn run_pattern_against_engine(
     state: State<'_, AppState>,
     pattern_id: String,
     target_ip: Option<String>,
+    speed_label: Option<String>,
 ) -> Result<ReplaySessionResult, String> {
+    let speed = speed_factor_from_label(speed_label.as_deref().unwrap_or("1x"));
     let pm = state.replay_state.pattern_manager.lock();
     let pattern = pm
         .get_pattern(&pattern_id)
@@ -282,7 +297,7 @@ pub fn run_pattern_against_engine(
         traffic.packets.clone(),
         traffic.raw_data,
         &mut rule_engine,
-        1.0,
+        speed,
         move |current, total| {
             let event = ReplayProgressEvent {
                 session_index: 0,
@@ -417,4 +432,75 @@ pub fn export_effectiveness_report_json(
 ) -> Result<(), String> {
     let content = serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?;
     std::fs::write(&path, content).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn generate_heatmap(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<HeatmapData, String> {
+    let pm = state.replay_state.pattern_manager.lock();
+    let all_patterns = pm.get_all_patterns();
+    drop(pm);
+
+    let rules = {
+        let rm = state.rule_manager.lock();
+        rm.get_rules()
+    };
+
+    let rule_ids: Vec<String> = rules.iter().map(|r| r.id.clone()).collect();
+    let rule_names: Vec<String> = rules.iter().map(|r| r.name.clone()).collect();
+    let pattern_ids: Vec<String> = all_patterns.iter().map(|p| p.id.clone()).collect();
+    let pattern_names: Vec<String> = all_patterns.iter().map(|p| p.name.clone()).collect();
+
+    let total = all_patterns.len() as u32;
+    let mut cells = Vec::new();
+
+    for (idx, pattern) in all_patterns.iter().enumerate() {
+        let event = HeatmapProgressEvent {
+            current: idx as u32,
+            total,
+            pattern_name: pattern.name.clone(),
+        };
+        let _ = app.emit_all("heatmap_progress", &event);
+
+        let traffic = generate_traffic(&pattern, None);
+
+        let rule_engine_clone = {
+            let mut rm = state.rule_manager.lock();
+            rm.clear_rate_counters();
+            rm.get_rule_engine_clone()
+        };
+        let mut rule_engine = rule_engine_clone.lock();
+
+        let (matched_rules, _) = inject_packets_to_engine(
+            traffic.packets.clone(),
+            traffic.raw_data,
+            &mut rule_engine,
+        );
+
+        for rule in &rules {
+            let matched = matched_rules.iter().find(|m| m.rule_id == rule.id);
+            let (count, pkt_nos) = match matched {
+                Some(m) => (m.trigger_count, m.triggered_packet_nos.clone()),
+                None => (0, Vec::new()),
+            };
+            cells.push(HeatmapCell {
+                pattern_id: pattern.id.clone(),
+                pattern_name: pattern.name.clone(),
+                rule_id: rule.id.clone(),
+                rule_name: rule.name.clone(),
+                trigger_count: count,
+                triggered_packet_nos: pkt_nos,
+            });
+        }
+    }
+
+    Ok(HeatmapData {
+        pattern_ids,
+        pattern_names,
+        rule_ids,
+        rule_names,
+        cells,
+    })
 }

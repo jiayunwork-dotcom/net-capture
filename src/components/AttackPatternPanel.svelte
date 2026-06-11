@@ -8,10 +8,17 @@
     deleteAttackPattern,
     runPatternAgainstEngine,
     generateEffectivenessReport,
+    generateHeatmap,
     ATTACK_CATEGORIES,
     isGeneratingTraffic,
     isRunningReport,
+    simSpeed,
+    heatmapData,
+    isGeneratingHeatmap,
+    heatmapProgress,
   } from '../stores/attack_patterns.js';
+  import { SPEED_OPTIONS } from '../stores/replay.js';
+  import { loadPacketDetail, selectedPacketNo } from '../stores/packets.js';
 
   let categoryFilter = 'all';
   let showAddDialog = false;
@@ -19,6 +26,8 @@
   let selectedPatternIds = new Set();
   let targetIp = '127.0.0.1';
   let editingPattern = null;
+  let heatmapTooltip = null;
+  let heatmapCellDetail = null;
 
   let newPattern = {
     name: '',
@@ -259,7 +268,7 @@
 
   async function handleRunPattern(pattern) {
     try {
-      await runPatternAgainstEngine(pattern.id, targetIp);
+      await runPatternAgainstEngine(pattern.id, targetIp, $simSpeed);
     } catch (e) {
       alert('执行失败: ' + e);
     }
@@ -277,6 +286,61 @@
     }
   }
 
+  async function handleGenerateHeatmap() {
+    try {
+      await generateHeatmap();
+    } catch (e) {
+      alert('生成热力图失败: ' + e);
+    }
+  }
+
+  function getHeatmapCellColor(count) {
+    if (count === 0) return 'h0';
+    if (count <= 5) return 'h1';
+    if (count <= 20) return 'h2';
+    return 'h3';
+  }
+
+  function handleHeatmapMouseEnter(event, cell) {
+    const rect = event.target.getBoundingClientRect();
+    heatmapTooltip = {
+      x: rect.left,
+      y: rect.top - 4,
+      patternName: cell.pattern_name,
+      ruleName: cell.rule_name,
+      count: cell.trigger_count,
+      packetNos: cell.triggered_packet_nos,
+    };
+  }
+
+  function handleHeatmapMouseLeave() {
+    heatmapTooltip = null;
+  }
+
+  function handleHeatmapCellClick(cell) {
+    if (cell.trigger_count === 0) return;
+    heatmapCellDetail = cell;
+  }
+
+  function closeHeatmapCellDetail() {
+    heatmapCellDetail = null;
+  }
+
+  function handlePacketClick(packetNo) {
+    loadPacketDetail(packetNo);
+  }
+
+  $: heatmapMatrix = (() => {
+    if (!$heatmapData) return null;
+    const { pattern_ids, rule_ids, cells } = $heatmapData;
+    const matrix = {};
+    for (const cell of cells) {
+      const key = cell.pattern_id + '|' + cell.rule_id;
+      matrix[key] = cell;
+    }
+    return { patternIds: pattern_ids, ruleIds: rule_ids, lookup: matrix };
+  })();
+
   $: selectedCount = selectedPatternIds.size;
 
   function getCategoryString(cat) {
@@ -293,6 +357,14 @@
       <label class="target-ip-label">
         目标IP:
         <input type="text" bind:value={targetIp} placeholder="127.0.0.1" />
+      </label>
+      <label class="speed-label">
+        速度:
+        <select bind:value={$simSpeed} class="speed-select">
+          {#each SPEED_OPTIONS as opt}
+            <option value={opt.value}>{opt.label}</option>
+          {/each}
+        </select>
       </label>
       <button class="btn-report" disabled={selectedCount === 0 || $isRunningReport} on:click={handleRunReport}>
         {$isRunningReport ? '⏳ 生成中...' : '📊 规则有效性报告'}
@@ -372,7 +444,109 @@
       {/each}
     {/if}
   </div>
+
+  <div class="heatmap-section">
+    <div class="heatmap-header">
+      <h4>🗺️ 规则覆盖热力图</h4>
+      <button
+        class="btn-heatmap"
+        disabled={$isGeneratingHeatmap}
+        on:click={handleGenerateHeatmap}
+      >
+        {$isGeneratingHeatmap ? '⏳ 生成中...' : '🔥 生成热力图'}
+      </button>
+    </div>
+    {#if $heatmapProgress}
+      <div class="heatmap-progress">
+        正在分析第 {$heatmapProgress.current + 1}/{$heatmapProgress.total} 条特征 ({$heatmapProgress.pattern_name})
+      </div>
+    {/if}
+    {#if heatmapMatrix && heatmapMatrix.patternIds.length > 0 && heatmapMatrix.ruleIds.length > 0}
+      <div class="heatmap-wrapper">
+        <table class="heatmap-table">
+          <thead>
+            <tr>
+              <th class="corner-cell">特征\规则</th>
+              {#each heatmapMatrix.ruleIds as rid, ri}
+                <th class="rule-col" title={$heatmapData.rule_names[ri]}>
+                  {$heatmapData.rule_names[ri].length > 8 ? $heatmapData.rule_names[ri].slice(0, 8) + '…' : $heatmapData.rule_names[ri]}
+                </th>
+              {/each}
+            </tr>
+          </thead>
+          <tbody>
+            {#each heatmapMatrix.patternIds as pid, pi}
+              <tr>
+                <td class="pattern-cell" title={$heatmapData.pattern_names[pi]}>
+                  {$heatmapData.pattern_names[pi].length > 12 ? $heatmapData.pattern_names[pi].slice(0, 12) + '…' : $heatmapData.pattern_names[pi]}
+                </td>
+                {#each heatmapMatrix.ruleIds as rid, ri}
+                  {@const cell = heatmapMatrix.lookup[pid + '|' + rid]}
+                  <td
+                    class="heatmap-cell {cell ? getHeatmapCellColor(cell.trigger_count) : 'h0'}"
+                    on:mouseenter={(e) => cell && handleHeatmapMouseEnter(e, cell)}
+                    on:mouseleave={handleHeatmapMouseLeave}
+                    on:click={() => cell && handleHeatmapCellClick(cell)}
+                  >
+                    {cell ? cell.trigger_count : 0}
+                  </td>
+                {/each}
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      <div class="heatmap-legend">
+        <span class="legend-item"><span class="legend-box h0"></span> 0次</span>
+        <span class="legend-item"><span class="legend-box h1"></span> 1-5次</span>
+        <span class="legend-item"><span class="legend-box h2"></span> 6-20次</span>
+        <span class="legend-item"><span class="legend-box h3"></span> >20次</span>
+      </div>
+    {:else if !$isGeneratingHeatmap && $heatmapData}
+      <div class="heatmap-empty">暂无数据，请先生成热力图</div>
+    {/if}
+  </div>
 </div>
+
+{#if heatmapTooltip}
+  <div class="heatmap-tooltip" style="left:{heatmapTooltip.x}px; top:{heatmapTooltip.y}px;">
+    <div><b>{heatmapTooltip.patternName}</b> × <b>{heatmapTooltip.ruleName}</b></div>
+    <div>触发次数: {heatmapTooltip.count}</div>
+    {#if heatmapTooltip.packetNos && heatmapTooltip.packetNos.length > 0}
+      <div class="tooltip-packets">包编号: {heatmapTooltip.packetNos.slice(0, 10).map(n => '#' + n).join(', ')}{heatmapTooltip.packetNos.length > 10 ? '...' : ''}</div>
+    {/if}
+  </div>
+{/if}
+
+{#if heatmapCellDetail}
+  <div class="cell-detail-overlay" on:click={closeHeatmapCellDetail}>
+    <div class="cell-detail-dialog" on:click|stopPropagation>
+      <div class="dialog-header">
+        <h3>📋 触发包详情</h3>
+        <button class="btn-close" on:click={closeHeatmapCellDetail}>✕</button>
+      </div>
+      <div class="cell-detail-body">
+        <div class="cell-detail-info">
+          <span><b>特征:</b> {heatmapCellDetail.pattern_name}</span>
+          <span><b>规则:</b> {heatmapCellDetail.rule_name}</span>
+          <span><b>触发次数:</b> {heatmapCellDetail.trigger_count}</span>
+        </div>
+        <div class="cell-detail-packets">
+          <span class="packet-label">触发包编号:</span>
+          {#each heatmapCellDetail.triggered_packet_nos as pktNo}
+            <button
+              class="packet-btn"
+              class:active={$selectedPacketNo === pktNo}
+              on:click={() => handlePacketClick(pktNo)}
+            >
+              #{pktNo}
+            </button>
+          {/each}
+        </div>
+      </div>
+    </div>
+  </div>
+{/if}
 
 {#if showAddDialog}
   <div class="dialog-overlay" on:click={closeAddDialog}>
@@ -607,6 +781,21 @@
     width: 120px;
     font-family: monospace;
   }
+  .speed-label {
+    color: #aaa;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .speed-select {
+    background: #1e1e1e;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+  }
   .btn-add, .btn-report {
     background: #2e7d32;
     color: #fff;
@@ -785,6 +974,239 @@
   .btn-edit:hover { background: #555; }
   .btn-delete { background: #5d1b1b; color: #ef9a9a; }
   .btn-delete:hover { background: #7a2525; }
+
+  .heatmap-section {
+    border-top: 1px solid #444;
+    background: #252525;
+    padding: 12px 16px;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  .heatmap-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+  .heatmap-header h4 {
+    color: #ccc;
+    font-size: 13px;
+    margin: 0;
+  }
+  .btn-heatmap {
+    background: #e65100;
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    padding: 5px 12px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .btn-heatmap:hover:not(:disabled) { background: #f57c00; }
+  .btn-heatmap:disabled { opacity: 0.5; cursor: not-allowed; }
+  .heatmap-progress {
+    color: #4fc3f7;
+    font-size: 12px;
+    margin-bottom: 8px;
+    animation: pulse 1.5s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+  .heatmap-wrapper {
+    overflow-x: auto;
+    margin-bottom: 8px;
+  }
+  .heatmap-table {
+    border-collapse: collapse;
+    font-size: 11px;
+  }
+  .corner-cell {
+    background: #333;
+    color: #aaa;
+    padding: 4px 6px;
+    font-size: 10px;
+    position: sticky;
+    top: 0;
+    left: 0;
+    z-index: 3;
+  }
+  .rule-col {
+    background: #333;
+    color: #aaa;
+    padding: 4px 6px;
+    font-size: 10px;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    min-width: 50px;
+    max-width: 70px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .pattern-cell {
+    background: #2a2a2a;
+    color: #ccc;
+    padding: 4px 6px;
+    font-size: 10px;
+    position: sticky;
+    left: 0;
+    z-index: 1;
+    white-space: nowrap;
+    max-width: 100px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .heatmap-cell {
+    padding: 4px 6px;
+    text-align: center;
+    cursor: pointer;
+    border: 1px solid #333;
+    min-width: 36px;
+    transition: opacity 0.15s;
+  }
+  .heatmap-cell:hover {
+    opacity: 0.8;
+    outline: 2px solid #4fc3f7;
+  }
+  .heatmap-cell.h0 { background: #3a3a3a; color: #666; }
+  .heatmap-cell.h1 { background: #2e7d32; color: #c8e6c9; }
+  .heatmap-cell.h2 { background: #1b5e20; color: #a5d6a7; }
+  .heatmap-cell.h3 { background: #0a3d0a; color: #69f069; font-weight: 600; }
+  .heatmap-legend {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+    font-size: 11px;
+    color: #aaa;
+  }
+  .legend-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .legend-box {
+    display: inline-block;
+    width: 14px;
+    height: 14px;
+    border-radius: 2px;
+  }
+  .legend-box.h0 { background: #3a3a3a; }
+  .legend-box.h1 { background: #2e7d32; }
+  .legend-box.h2 { background: #1b5e20; }
+  .legend-box.h3 { background: #0a3d0a; }
+  .heatmap-empty {
+    color: #666;
+    text-align: center;
+    padding: 20px;
+    font-size: 12px;
+  }
+
+  .heatmap-tooltip {
+    position: fixed;
+    background: #1e1e1e;
+    border: 1px solid #555;
+    border-radius: 6px;
+    padding: 8px 12px;
+    font-size: 12px;
+    color: #ddd;
+    z-index: 5000;
+    pointer-events: none;
+    transform: translate(-50%, -100%);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+    max-width: 300px;
+  }
+  .heatmap-tooltip b { color: #4fc3f7; }
+  .tooltip-packets {
+    color: #aaa;
+    font-size: 11px;
+    margin-top: 4px;
+  }
+
+  .cell-detail-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 4000;
+  }
+  .cell-detail-dialog {
+    background: #2d2d2d;
+    border: 1px solid #555;
+    border-radius: 8px;
+    width: 600px;
+    max-width: 90vw;
+    max-height: 70vh;
+    overflow-y: auto;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+  }
+  .cell-detail-dialog .dialog-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 18px;
+    background: #1e1e1e;
+    border-bottom: 1px solid #444;
+  }
+  .cell-detail-dialog .dialog-header h3 {
+    margin: 0;
+    color: #eee;
+    font-size: 14px;
+  }
+  .cell-detail-dialog .btn-close {
+    background: transparent;
+    border: none;
+    color: #888;
+    font-size: 16px;
+    cursor: pointer;
+  }
+  .cell-detail-dialog .btn-close:hover { color: #eee; }
+  .cell-detail-body {
+    padding: 16px 18px;
+  }
+  .cell-detail-info {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+    font-size: 13px;
+    color: #ccc;
+  }
+  .cell-detail-info b { color: #4fc3f7; }
+  .cell-detail-packets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    align-items: center;
+  }
+  .packet-label {
+    color: #888;
+    font-size: 12px;
+    margin-right: 4px;
+  }
+  .packet-btn {
+    background: #1e3a5f;
+    color: #90caf9;
+    border: 1px solid #2a5080;
+    border-radius: 3px;
+    padding: 1px 6px;
+    cursor: pointer;
+    font-size: 11px;
+    font-family: monospace;
+  }
+  .packet-btn:hover {
+    background: #2a5080;
+    border-color: #4fc3f7;
+  }
+  .packet-btn.active {
+    background: #1565c0;
+    border-color: #4fc3f7;
+    color: #fff;
+  }
+
   .dialog-overlay {
     position: fixed;
     top: 0; left: 0; right: 0; bottom: 0;

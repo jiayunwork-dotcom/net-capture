@@ -6,9 +6,13 @@
     closeReplayResult,
     exportReplayResult,
     exportBatchSummary,
+    replaySpeed,
+    SPEED_OPTIONS,
   } from '../stores/replay.js';
+  import { loadPacketDetail, selectedPacketNo } from '../stores/packets.js';
 
   let selectedSessionIndex = 0;
+  let expandedRules = new Set();
 
   $: currentResult = $replayResults && $replayResults[selectedSessionIndex]
     ? $replayResults[selectedSessionIndex]
@@ -44,6 +48,19 @@
       if (ok) alert('导出成功');
     }
   }
+
+  function toggleRuleExpand(ruleId) {
+    if (expandedRules.has(ruleId)) {
+      expandedRules.delete(ruleId);
+    } else {
+      expandedRules.add(ruleId);
+    }
+    expandedRules = new Set(expandedRules);
+  }
+
+  function handlePacketClick(packetNo) {
+    loadPacketDetail(packetNo);
+  }
 </script>
 
 {#if $showReplayResult && $replayBatchSummary}
@@ -51,7 +68,17 @@
     <div class="replay-dialog" on:click|stopPropagation>
       <div class="dialog-header">
         <h3>🎬 流量回放结果</h3>
-        <button class="btn-close" on:click={closeReplayResult}>✕</button>
+        <div class="header-right">
+          <label class="speed-label">
+            速度:
+            <select bind:value={$replaySpeed} class="speed-select">
+              {#each SPEED_OPTIONS as opt}
+                <option value={opt.value}>{opt.label}</option>
+              {/each}
+            </select>
+          </label>
+          <button class="btn-close" on:click={closeReplayResult}>✕</button>
+        </div>
       </div>
 
       <div class="summary-section">
@@ -128,6 +155,7 @@
                 <table class="rules-table">
                   <thead>
                     <tr>
+                      <th style="width:30px;"></th>
                       <th>规则名称</th>
                       <th>触发次数</th>
                       <th>首次触发包编号</th>
@@ -137,11 +165,38 @@
                   <tbody>
                     {#each currentResult.matched_rules as rule}
                       <tr>
+                        <td>
+                          <button
+                            class="btn-expand"
+                            on:click={() => toggleRuleExpand(rule.rule_id)}
+                            title={expandedRules.has(rule.rule_id) ? '收起' : '展开包列表'}
+                          >
+                            {expandedRules.has(rule.rule_id) ? '▼' : '▶'}
+                          </button>
+                        </td>
                         <td class="rule-name">{rule.rule_name}</td>
                         <td class="count">{rule.trigger_count}</td>
                         <td class="mono">#{rule.first_packet_no}</td>
                         <td>{formatTimestamp(rule.first_timestamp_secs, rule.first_timestamp_micros)}</td>
                       </tr>
+                      {#if expandedRules.has(rule.rule_id) && rule.triggered_packet_nos && rule.triggered_packet_nos.length > 0}
+                        <tr class="packet-row">
+                          <td colspan="5">
+                            <div class="packet-list">
+                              <span class="packet-label">触发包:</span>
+                              {#each rule.triggered_packet_nos as pktNo}
+                                <button
+                                  class="packet-btn"
+                                  class:active={$selectedPacketNo === pktNo}
+                                  on:click={() => handlePacketClick(pktNo)}
+                                >
+                                  #{pktNo}
+                                </button>
+                              {/each}
+                            </div>
+                          </td>
+                        </tr>
+                      {/if}
                     {/each}
                   </tbody>
                 </table>
@@ -216,6 +271,26 @@
     margin: 0;
     color: #eee;
     font-size: 15px;
+  }
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .speed-label {
+    color: #aaa;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .speed-select {
+    background: #1e1e1e;
+    color: #ddd;
+    border: 1px solid #555;
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 12px;
   }
   .btn-close {
     background: transparent;
@@ -376,6 +451,54 @@
   .count {
     color: #ffb74d;
     font-weight: 600;
+  }
+  .btn-expand {
+    background: transparent;
+    border: none;
+    color: #888;
+    cursor: pointer;
+    font-size: 10px;
+    padding: 2px 4px;
+    border-radius: 3px;
+  }
+  .btn-expand:hover {
+    color: #4fc3f7;
+    background: #333;
+  }
+  .packet-row td {
+    background: #1a1a2e;
+    border-bottom: 1px solid #2a2a3e;
+    padding: 6px 10px;
+  }
+  .packet-list {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+  }
+  .packet-label {
+    color: #888;
+    font-size: 11px;
+    margin-right: 4px;
+  }
+  .packet-btn {
+    background: #1e3a5f;
+    color: #90caf9;
+    border: 1px solid #2a5080;
+    border-radius: 3px;
+    padding: 1px 6px;
+    cursor: pointer;
+    font-size: 11px;
+    font-family: 'Menlo', monospace;
+  }
+  .packet-btn:hover {
+    background: #2a5080;
+    border-color: #4fc3f7;
+  }
+  .packet-btn.active {
+    background: #1565c0;
+    border-color: #4fc3f7;
+    color: #fff;
   }
   .empty-state {
     padding: 20px;

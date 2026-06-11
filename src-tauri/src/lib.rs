@@ -139,6 +139,7 @@ pub fn run() {
             replay::commands::export_replay_result_json,
             replay::commands::export_batch_summary_json,
             replay::commands::export_effectiveness_report_json,
+            replay::commands::generate_heatmap,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

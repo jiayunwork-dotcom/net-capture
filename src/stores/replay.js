@@ -8,6 +8,15 @@ export const replayBatchSummary = writable(null);
 export const replayProgress = writable(null);
 export const isReplaying = writable(false);
 export const showReplayResult = writable(false);
+export const replaySpeed = writable('1x');
+
+export const SPEED_OPTIONS = [
+  { value: '0.5x', label: '0.5x' },
+  { value: '1x', label: '1x' },
+  { value: '2x', label: '2x' },
+  { value: '5x', label: '5x' },
+  { value: 'max', label: '最大速度' },
+];
 
 let unlistenReplayProgress = null;
 
@@ -18,7 +27,7 @@ async function ensureReplayProgressListener() {
   });
 }
 
-export async function replaySessions(sessionIds) {
+export async function replaySessions(sessionIds, speedLabel) {
   if (!sessionIds || sessionIds.length === 0) return;
   isReplaying.set(true);
   replayProgress.set({
@@ -32,7 +41,7 @@ export async function replaySessions(sessionIds) {
 
   try {
     await ensureReplayProgressListener();
-    const result = await invoke('replay_sessions', { sessionIds });
+    const result = await invoke('replay_sessions', { sessionIds, speedLabel: speedLabel || '1x' });
     replayBatchSummary.set(result);
     replayResults.set(result.per_session_results);
     showReplayResult.set(true);

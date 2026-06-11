@@ -12,9 +12,14 @@ export const isGeneratingTraffic = writable(false);
 export const isRunningReport = writable(false);
 export const simulationProgress = writable(null);
 export const reportProgress = writable(null);
+export const simSpeed = writable('1x');
+export const heatmapData = writable(null);
+export const isGeneratingHeatmap = writable(false);
+export const heatmapProgress = writable(null);
 
 let unlistenSimProgress = null;
 let unlistenReportProgress = null;
+let unlistenHeatmapProgress = null;
 
 async function ensureSimProgressListener() {
   if (unlistenSimProgress) return;
@@ -27,6 +32,13 @@ async function ensureReportProgressListener() {
   if (unlistenReportProgress) return;
   unlistenReportProgress = await listen('effectiveness_report_progress', (event) => {
     reportProgress.set(event.payload);
+  });
+}
+
+async function ensureHeatmapProgressListener() {
+  if (unlistenHeatmapProgress) return;
+  unlistenHeatmapProgress = await listen('heatmap_progress', (event) => {
+    heatmapProgress.set(event.payload);
   });
 }
 
@@ -74,7 +86,7 @@ export async function deleteAttackPattern(patternId) {
   }
 }
 
-export async function runPatternAgainstEngine(patternId, targetIp) {
+export async function runPatternAgainstEngine(patternId, targetIp, speedLabel) {
   isGeneratingTraffic.set(true);
   simulationProgress.set({
     session_index: 0,
@@ -89,6 +101,7 @@ export async function runPatternAgainstEngine(patternId, targetIp) {
     const result = await invoke('run_pattern_against_engine', {
       patternId,
       targetIp: targetIp || null,
+      speedLabel: speedLabel || '1x',
     });
     patternSimResult.set(result);
     showPatternSimResult.set(true);
@@ -157,6 +170,26 @@ export function closePatternSimResult() {
 export function closeEffectivenessReport() {
   showEffectivenessReport.set(false);
   effectivenessReport.set(null);
+}
+
+export async function generateHeatmap() {
+  isGeneratingHeatmap.set(true);
+  heatmapProgress.set(null);
+  heatmapData.set(null);
+  try {
+    await ensureHeatmapProgressListener();
+    const result = await invoke('generate_heatmap', {});
+    heatmapData.set(result);
+    return result;
+  } catch (e) {
+    console.error('Generate heatmap error:', e);
+    throw e;
+  } finally {
+    isGeneratingHeatmap.set(false);
+    setTimeout(() => {
+      heatmapProgress.set(null);
+    }, 500);
+  }
 }
 
 export const ATTACK_CATEGORIES = [

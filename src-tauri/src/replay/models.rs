@@ -9,6 +9,34 @@ pub struct RuleMatchRecord {
     pub first_packet_no: u64,
     pub first_timestamp_secs: u64,
     pub first_timestamp_micros: u32,
+    #[serde(default)]
+    pub triggered_packet_nos: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeatmapCell {
+    pub pattern_id: String,
+    pub pattern_name: String,
+    pub rule_id: String,
+    pub rule_name: String,
+    pub trigger_count: u64,
+    pub triggered_packet_nos: Vec<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeatmapData {
+    pub pattern_ids: Vec<String>,
+    pub pattern_names: Vec<String>,
+    pub rule_ids: Vec<String>,
+    pub rule_names: Vec<String>,
+    pub cells: Vec<HeatmapCell>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HeatmapProgressEvent {
+    pub current: u32,
+    pub total: u32,
+    pub pattern_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
