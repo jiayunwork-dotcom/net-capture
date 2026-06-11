@@ -117,6 +117,10 @@ impl RateCounterManager {
         self.counters.get_mut(&key).unwrap()
     }
 
+    pub fn ensure_counter(&mut self, window_secs: u32, per_ip: bool) {
+        self.get_or_create(window_secs, per_ip);
+    }
+
     pub fn record_packet(&mut self, src_ip: &str, dst_ip: &str, timestamp_secs: u64) {
         for (key, counter) in self.counters.iter_mut() {
             let (_, per_ip) = key;

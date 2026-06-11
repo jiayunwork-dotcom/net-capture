@@ -340,8 +340,23 @@
     }
   }
 
+  function scrollToPacket(packetNo) {
+    if (!containerEl) return;
+    const index = sortedPackets.findIndex(p => p.no === packetNo);
+    if (index >= 0) {
+      const targetScrollTop = index * ROW_HEIGHT - containerHeight / 2 + ROW_HEIGHT / 2;
+      containerEl.scrollTop = Math.max(0, targetScrollTop);
+    }
+  }
+
   $: if (sortedPackets.length > 0 && $autoScroll && sortColumn === null) {
     requestAnimationFrame(scrollToBottom);
+  }
+
+  $: if ($selectedPackets.length > 0) {
+    requestAnimationFrame(() => {
+      scrollToPacket($selectedPackets[0]);
+    });
   }
 
   function handleResize() {

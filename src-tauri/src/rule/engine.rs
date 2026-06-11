@@ -21,11 +21,22 @@ impl RuleEngine {
     pub fn set_rules(&mut self, mut rules: Vec<DetectionRule>) {
         rules.sort_by_key(|r| r.priority.order());
         self.rules = rules;
+        self.precreate_rate_counters();
     }
 
     pub fn add_rule(&mut self, rule: DetectionRule) {
         self.rules.push(rule);
         self.rules.sort_by_key(|r| r.priority.order());
+        self.precreate_rate_counters();
+    }
+
+    fn precreate_rate_counters(&mut self) {
+        for rule in &self.rules {
+            if !rule.enabled {
+                continue;
+            }
+            collect_rate_limits(&rule.condition, &mut self.rate_counters);
+        }
     }
 
     pub fn record_packet_for_rate(&mut self, meta: &PacketMetadata) {
@@ -306,4 +317,21 @@ fn compile_regex_in_node(node: &mut ConditionNode) -> Result<(), String> {
         _ => {}
     }
     Ok(())
+}
+
+pub fn collect_rate_limits(node: &ConditionNode, counters: &mut RateCounterManager) {
+    match node {
+        ConditionNode::And { children } | ConditionNode::Or { children } => {
+            for child in children {
+                collect_rate_limits(child, counters);
+            }
+        }
+        ConditionNode::Not { child } => {
+            collect_rate_limits(child, counters);
+        }
+        ConditionNode::RateLimit { window_secs, src_ip, .. } => {
+            counters.ensure_counter(*window_secs, *src_ip);
+        }
+        _ => {}
+    }
 }

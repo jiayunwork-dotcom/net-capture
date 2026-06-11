@@ -86,6 +86,7 @@
 
   function handleSelectAlertPacket(packetNo) {
     activeTab = 'packets';
+    selectedPackets.set([packetNo]);
     loadPacketDetail(packetNo);
   }
 
