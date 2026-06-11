@@ -8,17 +8,20 @@ pub mod pcap_io;
 pub mod stats;
 pub mod tls;
 pub mod commands;
+pub mod rule;
 
 use std::sync::Arc;
 use parking_lot::Mutex;
 use crate::capture::CaptureEngine;
 use crate::session::SessionTracker;
 use crate::stats::StatsCollector;
+use crate::rule::manager::RuleManager;
 
 pub struct AppState {
     pub capture_engine: Arc<Mutex<CaptureEngine>>,
     pub session_tracker: Arc<Mutex<SessionTracker>>,
     pub stats_collector: Arc<Mutex<StatsCollector>>,
+    pub rule_manager: Arc<Mutex<RuleManager>>,
 }
 
 impl Default for AppState {
@@ -27,6 +30,7 @@ impl Default for AppState {
             capture_engine: Arc::new(Mutex::new(CaptureEngine::new())),
             session_tracker: Arc::new(Mutex::new(SessionTracker::new())),
             stats_collector: Arc::new(Mutex::new(StatsCollector::new())),
+            rule_manager: Arc::new(Mutex::new(RuleManager::new())),
         }
     }
 }
@@ -34,6 +38,11 @@ impl Default for AppState {
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
+        .setup(|app| {
+            let state = tauri::Manager::state::<AppState>(app);
+            let _ = rule::commands::init_rule_manager(&app.handle(), &state);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::list_interfaces,
             commands::start_capture,
@@ -60,6 +69,28 @@ pub fn run() {
             commands::delete_capture_template,
             commands::export_templates,
             commands::import_templates,
+            rule::commands::get_rules,
+            rule::commands::get_rule_groups,
+            rule::commands::add_rule,
+            rule::commands::update_rule,
+            rule::commands::delete_rule,
+            rule::commands::toggle_rule,
+            rule::commands::add_rule_group,
+            rule::commands::update_rule_group,
+            rule::commands::delete_rule_group,
+            rule::commands::parse_rule_expression,
+            rule::commands::node_to_expression_string,
+            rule::commands::validate_rule_regex,
+            rule::commands::validate_rule_cidr,
+            rule::commands::get_alerts,
+            rule::commands::get_new_alerts,
+            rule::commands::get_alert_count,
+            rule::commands::clear_alerts,
+            rule::commands::export_rules_to_file,
+            rule::commands::import_rules_from_file,
+            rule::commands::get_max_rules,
+            rule::commands::get_max_alerts,
+            rule::commands::compile_rule_regex,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

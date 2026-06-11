@@ -58,7 +58,18 @@ pub fn validate_bpf(state: State<'_, AppState>, filter: String) -> Result<(), St
 #[tauri::command]
 pub fn drain_new_packets(state: State<'_, AppState>) -> Result<Vec<PacketMetadata>, String> {
     let mut engine = state.capture_engine.lock();
-    Ok(engine.drain_new_packets())
+    let packets = engine.drain_new_packets();
+
+    if !packets.is_empty() {
+        let rule_manager = state.rule_manager.lock();
+        for meta in &packets {
+            if let Some(raw_data) = engine.get_raw_data(meta.no) {
+                rule_manager.submit_packet(meta.clone(), raw_data);
+            }
+        }
+    }
+
+    Ok(packets)
 }
 
 #[tauri::command]

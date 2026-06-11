@@ -10,16 +10,21 @@
   import SessionList from './components/SessionList.svelte';
   import TcpStream from './components/TcpStream.svelte';
   import PacketCompare from './components/PacketCompare.svelte';
+  import AlertPanel from './components/AlertPanel.svelte';
+  import RuleSettingsPanel from './components/RuleSettingsPanel.svelte';
   import { captureStatus, isCapturing, loadInterfaces } from './stores/capture.js';
-  import { packets, filteredPackets } from './stores/packets.js';
+  import { packets, filteredPackets, loadPacketDetail, selectedPacketNo } from './stores/packets.js';
   import { loadSessions } from './stores/sessions.js';
   import { selectedPackets } from './stores/selection.js';
   import { loadAllMarks } from './stores/marks.js';
+  import { loadRules } from './stores/rules.js';
+  import { alerts, alertCount, loadAlerts, startAlertPolling, stopAlertPolling } from './stores/alerts.js';
 
   let activeTab = 'packets';
   let detailVisible = true;
   let showCompare = false;
   let showTemplateMenu = false;
+  let showRuleSettings = false;
 
   let templates = [];
   let templateNameInput = '';
@@ -30,7 +35,23 @@
   onMount(() => {
     loadInterfaces();
     loadTemplates();
+    loadRules();
+    loadAlerts();
+    startAlertPolling();
   });
+
+  function handleSelectAlertPacket(packetNo) {
+    activeTab = 'packets';
+    loadPacketDetail(packetNo);
+  }
+
+  function openRuleSettings() {
+    showRuleSettings = true;
+  }
+
+  function closeRuleSettings() {
+    showRuleSettings = false;
+  }
 
   async function handleExport() {
     const filePath = await save({
@@ -240,6 +261,9 @@
       <button class="toolbar-btn" on:click={handleImport} title="导入PCAP">📥 导入</button>
       <button class="toolbar-btn" on:click={handleExport} title="导出PCAP">📤 导出</button>
       <button class="toolbar-btn" on:click={handleLoadKeylog} title="加载SSLKEYLOG">🔐 TLS</button>
+      <button class="toolbar-btn settings-btn" on:click={openRuleSettings} title="检测规则设置">
+        ⚙️ 规则
+      </button>
     </div>
   </header>
 
@@ -255,6 +279,12 @@
       </button>
       <button class="tab" class:active={activeTab === 'stats'} on:click={() => activeTab = 'stats'}>
         统计
+      </button>
+      <button class="tab alert-tab" class:active={activeTab === 'alerts'} on:click={() => activeTab = 'alerts'}>
+        告警
+        {#if $alertCount > 0}
+          <span class="alert-badge">{$alertCount}</span>
+        {/if}
       </button>
     </div>
 
@@ -274,6 +304,8 @@
         <SessionList />
       {:else if activeTab === 'stats'}
         <StatsPanel />
+      {:else if activeTab === 'alerts'}
+        <AlertPanel onSelectPacket={handleSelectAlertPacket} />
       {/if}
     </div>
   </div>
@@ -281,6 +313,14 @@
   <TcpStream />
   <PacketCompare visible={showCompare} onClose={closeCompare} />
 </div>
+
+{#if showRuleSettings}
+  <div class="dialog-overlay" on:click={closeRuleSettings}>
+    <div class="rule-settings-dialog" on:click|stopPropagation>
+      <RuleSettingsPanel onClose={closeRuleSettings} />
+    </div>
+  </div>
+{/if}
 
 {#if showSaveTemplateDialog}
   <div class="dialog-overlay" on:click={() => showSaveTemplateDialog = false}>
@@ -592,5 +632,46 @@
   }
   .btn-confirm:hover {
     background: #1976d2;
+  }
+
+  .alert-tab {
+    position: relative;
+  }
+
+  .alert-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 18px;
+    height: 18px;
+    padding: 0 5px;
+    margin-left: 6px;
+    background: #ef5350;
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    border-radius: 9px;
+    line-height: 1;
+  }
+
+  .tab.active .alert-badge {
+    background: #fff;
+    color: #ef5350;
+  }
+
+  .settings-btn {
+    min-width: 60px;
+  }
+
+  .rule-settings-dialog {
+    width: auto;
+    max-width: none;
+    padding: 0;
+    overflow: hidden;
+  }
+
+  .rule-settings-dialog :global(.settings-panel) {
+    width: 900px;
+    max-height: 80vh;
   }
 </style>
