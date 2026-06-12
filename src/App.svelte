@@ -18,10 +18,10 @@
   import AttackPatternPanel from './components/AttackPatternPanel.svelte';
   import RuleEffectivenessReport from './components/RuleEffectivenessReport.svelte';
   import PatternSimResult from './components/PatternSimResult.svelte';
-  import { isReplaying, replayProgress } from './stores/replay.js';
+  import { isReplaying, replayProgress, replaySpeed, SPEED_OPTIONS, setReplaySpeed } from './stores/replay.js';
   import { isGeneratingTraffic, isRunningReport, simulationProgress, reportProgress, isGeneratingHeatmap, heatmapProgress } from './stores/attack_patterns.js';
   import { captureStatus, isCapturing, loadInterfaces } from './stores/capture.js';
-  import { packets, filteredPackets, loadPacketDetail, selectedPacketNo } from './stores/packets.js';
+  import { packets, filteredPackets, loadPacketDetail, selectedPacketNo, jumpToPacketNo } from './stores/packets.js';
   import { loadSessions } from './stores/sessions.js';
   import { selectedPackets } from './stores/selection.js';
   import { loadAllMarks } from './stores/marks.js';
@@ -41,6 +41,10 @@
   let unlistenSound = null;
 
   $: canCompare = $selectedPackets.length === 2;
+
+  $: if ($jumpToPacketNo !== null && activeTab !== 'packets') {
+    activeTab = 'packets';
+  }
 
   onMount(async () => {
     loadInterfaces();
@@ -316,6 +320,21 @@
             {/if}
           </span>
         {/if}
+        {#if $isReplaying || $isGeneratingTraffic}
+          <span class="speed-control">
+            ⏩
+            <select
+              class="speed-select-inline"
+              value={$replaySpeed}
+              on:change={(e) => setReplaySpeed(e.target.value)}
+              title="回放速度"
+            >
+              {#each SPEED_OPTIONS as opt}
+                <option value={opt.value}>{opt.label}</option>
+              {/each}
+            </select>
+          </span>
+        {/if}
         {#if $isRunningReport}
           <span class="replay-status">
             📊 有效性报告生成中
@@ -498,6 +517,26 @@
     margin-left: 12px;
     font-weight: 500;
     animation: pulse 1.5s ease-in-out infinite;
+  }
+  .speed-control {
+    color: #4fc3f7;
+    margin-left: 12px;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+  }
+  .speed-select-inline {
+    background: #1e1e1e;
+    color: #90caf9;
+    border: 1px solid #3a3a3a;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .speed-select-inline:hover {
+    border-color: #4fc3f7;
   }
   @keyframes pulse {
     0%, 100% { opacity: 1; }

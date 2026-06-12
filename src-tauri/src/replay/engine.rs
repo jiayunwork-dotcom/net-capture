@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+use parking_lot::Mutex;
 use std::time::Duration;
 use crate::models::PacketMetadata;
 use crate::rule::engine::RuleEngine;
@@ -53,7 +55,7 @@ pub fn replay_packets_with_timing<F>(
     packets: Vec<PacketMetadata>,
     raw_data: Vec<Vec<u8>>,
     rule_engine: &mut RuleEngine,
-    speed_factor: f64,
+    speed_factor: Arc<Mutex<f64>>,
     mut progress_cb: F,
 ) -> (Vec<RuleMatchRecord>, Vec<ResponseLogEntry>)
 where
@@ -66,16 +68,18 @@ where
     rule_engine.clear_rate_counters();
 
     let mut prev_ts_micros: Option<u64> = None;
-    let no_sleep = speed_factor <= 0.0;
 
     for (idx, meta) in packets.iter().enumerate() {
+        let speed = *speed_factor.lock();
+        let no_sleep = speed <= 0.0;
+
         if !no_sleep {
             let curr_ts_micros = meta.timestamp_secs * 1_000_000 + meta.timestamp_micros as u64;
 
             if let Some(prev) = prev_ts_micros {
                 if curr_ts_micros > prev {
                     let diff_micros = curr_ts_micros - prev;
-                    let sleep_micros = (diff_micros as f64 / speed_factor) as u64;
+                    let sleep_micros = (diff_micros as f64 / speed) as u64;
                     if sleep_micros > 0 {
                         std::thread::sleep(Duration::from_micros(sleep_micros));
                     }

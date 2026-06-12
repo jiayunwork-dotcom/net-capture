@@ -2,6 +2,7 @@ import { writable } from 'svelte/store';
 import { invoke } from '@tauri-apps/api/tauri';
 import { save } from '@tauri-apps/api/dialog';
 import { listen } from '@tauri-apps/api/event';
+import { replaySpeed } from './replay.js';
 
 export const attackPatterns = writable([]);
 export const patternSimResult = writable(null);
@@ -87,6 +88,9 @@ export async function deleteAttackPattern(patternId) {
 }
 
 export async function runPatternAgainstEngine(patternId, targetIp, speedLabel) {
+  const speed = speedLabel || '1x';
+  simSpeed.set(speed);
+  replaySpeed.set(speed);
   isGeneratingTraffic.set(true);
   simulationProgress.set({
     session_index: 0,
@@ -101,7 +105,7 @@ export async function runPatternAgainstEngine(patternId, targetIp, speedLabel) {
     const result = await invoke('run_pattern_against_engine', {
       patternId,
       targetIp: targetIp || null,
-      speedLabel: speedLabel || '1x',
+      speedLabel: speed,
     });
     patternSimResult.set(result);
     showPatternSimResult.set(true);

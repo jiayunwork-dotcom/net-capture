@@ -29,6 +29,8 @@ async function ensureReplayProgressListener() {
 
 export async function replaySessions(sessionIds, speedLabel) {
   if (!sessionIds || sessionIds.length === 0) return;
+  const speed = speedLabel || '1x';
+  replaySpeed.set(speed);
   isReplaying.set(true);
   replayProgress.set({
     session_index: 0,
@@ -41,7 +43,7 @@ export async function replaySessions(sessionIds, speedLabel) {
 
   try {
     await ensureReplayProgressListener();
-    const result = await invoke('replay_sessions', { sessionIds, speedLabel: speedLabel || '1x' });
+    const result = await invoke('replay_sessions', { sessionIds, speedLabel: speed });
     replayBatchSummary.set(result);
     replayResults.set(result.per_session_results);
     showReplayResult.set(true);
@@ -95,4 +97,13 @@ export async function exportBatchSummary(summary) {
 
 export function closeReplayResult() {
   showReplayResult.set(false);
+}
+
+export async function setReplaySpeed(speedLabel) {
+  try {
+    replaySpeed.set(speedLabel);
+    await invoke('set_replay_speed', { speedLabel });
+  } catch (e) {
+    console.error('Set replay speed error:', e);
+  }
 }

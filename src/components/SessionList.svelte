@@ -2,7 +2,7 @@
   import { onMount } from 'svelte';
   import { sessions, loadSessions } from '../stores/sessions.js';
   import { isCapturing } from '../stores/capture.js';
-  import { replaySessions, replaySpeed, SPEED_OPTIONS } from '../stores/replay.js';
+  import { replaySessions, replaySpeed, SPEED_OPTIONS, setReplaySpeed } from '../stores/replay.js';
   import { traceTcpStream } from '../stores/sessions.js';
 
   let sessionPollInterval = null;
@@ -92,6 +92,12 @@
     contextMenu = { visible: false, x: 0, y: 0, sessionId: null };
   }
 
+  function handleSpeedChange(e) {
+    const val = e.target.value;
+    replaySpeed.set(val);
+    setReplaySpeed(val);
+  }
+
   async function handleReplaySelected() {
     closeContextMenu();
     const ids = Array.from(selectedSessionIds);
@@ -179,7 +185,7 @@
     >
       <div class="menu-item speed-item">
         <span>回放速度:</span>
-        <select bind:value={$replaySpeed} class="speed-select">
+        <select value={$replaySpeed} on:change={handleSpeedChange} class="speed-select">
           {#each SPEED_OPTIONS as opt}
             <option value={opt.value}>{opt.label}</option>
           {/each}

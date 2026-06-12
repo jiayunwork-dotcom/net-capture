@@ -17,7 +17,7 @@
     isGeneratingHeatmap,
     heatmapProgress,
   } from '../stores/attack_patterns.js';
-  import { SPEED_OPTIONS } from '../stores/replay.js';
+  import { SPEED_OPTIONS, setReplaySpeed } from '../stores/replay.js';
   import { loadPacketDetail, selectedPacketNo } from '../stores/packets.js';
 
   let categoryFilter = 'all';
@@ -274,6 +274,12 @@
     }
   }
 
+  function handleSimSpeedChange(e) {
+    const val = e.target.value;
+    simSpeed.set(val);
+    setReplaySpeed(val);
+  }
+
   async function handleRunReport() {
     if (selectedPatternIds.size === 0) {
       alert('请先选择至少一个攻击特征');
@@ -327,6 +333,7 @@
   }
 
   function handlePacketClick(packetNo) {
+    closeHeatmapCellDetail();
     loadPacketDetail(packetNo);
   }
 
@@ -360,7 +367,7 @@
       </label>
       <label class="speed-label">
         速度:
-        <select bind:value={$simSpeed} class="speed-select">
+        <select value={$simSpeed} on:change={handleSimSpeedChange} class="speed-select">
           {#each SPEED_OPTIONS as opt}
             <option value={opt.value}>{opt.label}</option>
           {/each}

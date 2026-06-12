@@ -5,7 +5,8 @@ export const packets = writable([]);
 export const filteredPackets = writable([]);
 export const selectedPacketNo = writable(null);
 export const packetDetail = writable(null);
-export const hexDump = writable([]);
+export const hexDump = writable(null);
+export const jumpToPacketNo = writable(null);
 export const autoScroll = writable(true);
 
 const MAX_DISPLAY_PACKETS = 500000;
@@ -53,6 +54,7 @@ export async function loadPacketDetail(no) {
     const detail = await invoke('get_packet_detail', { no });
     packetDetail.set(detail);
     selectedPacketNo.set(no);
+    jumpToPacketNo.set(no);
 
     const hex = await invoke('get_hex_dump', { no });
     hexDump.set(hex);

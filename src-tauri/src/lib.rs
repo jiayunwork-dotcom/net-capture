@@ -21,12 +21,14 @@ use crate::replay::patterns::AttackPatternManager;
 
 pub struct ReplayState {
     pub pattern_manager: Arc<Mutex<AttackPatternManager>>,
+    pub replay_speed_factor: Arc<Mutex<f64>>,
 }
 
 impl Default for ReplayState {
     fn default() -> Self {
         Self {
             pattern_manager: Arc::new(Mutex::new(AttackPatternManager::new())),
+            replay_speed_factor: Arc::new(Mutex::new(1.0)),
         }
     }
 }
@@ -129,6 +131,8 @@ pub fn run() {
             rule::commands::import_ban_csv,
             replay::commands::get_session_packets_for_replay,
             replay::commands::replay_sessions,
+            replay::commands::set_replay_speed,
+            replay::commands::get_replay_speed,
             replay::commands::get_attack_patterns,
             replay::commands::add_attack_pattern,
             replay::commands::update_attack_pattern,

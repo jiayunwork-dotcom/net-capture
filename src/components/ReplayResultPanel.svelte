@@ -8,6 +8,7 @@
     exportBatchSummary,
     replaySpeed,
     SPEED_OPTIONS,
+    setReplaySpeed,
   } from '../stores/replay.js';
   import { loadPacketDetail, selectedPacketNo } from '../stores/packets.js';
 
@@ -59,7 +60,12 @@
   }
 
   function handlePacketClick(packetNo) {
+    closeReplayResult();
     loadPacketDetail(packetNo);
+  }
+
+  function handleSpeedChange(e) {
+    setReplaySpeed(e.target.value);
   }
 </script>
 
@@ -71,7 +77,7 @@
         <div class="header-right">
           <label class="speed-label">
             速度:
-            <select bind:value={$replaySpeed} class="speed-select">
+            <select value={$replaySpeed} on:change={handleSpeedChange} class="speed-select">
               {#each SPEED_OPTIONS as opt}
                 <option value={opt.value}>{opt.label}</option>
               {/each}

@@ -91,13 +91,52 @@ pub fn get_session_packets_for_replay(
 }
 
 #[tauri::command]
+pub fn set_replay_speed(
+    state: State<'_, AppState>,
+    speed_label: String,
+) -> Result<(), String> {
+    let speed = speed_factor_from_label(&speed_label);
+    let mut s = state.replay_state.replay_speed_factor.lock();
+    *s = speed;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn get_replay_speed(
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let speed = *state.replay_state.replay_speed_factor.lock();
+    let label = if speed <= 0.0 {
+        "max".to_string()
+    } else if (speed - 0.5).abs() < 0.01 {
+        "0.5x".to_string()
+    } else if (speed - 1.0).abs() < 0.01 {
+        "1x".to_string()
+    } else if (speed - 2.0).abs() < 0.01 {
+        "2x".to_string()
+    } else if (speed - 5.0).abs() < 0.01 {
+        "5x".to_string()
+    } else {
+        "1x".to_string()
+    };
+    Ok(label)
+}
+
+#[tauri::command]
 pub fn replay_sessions(
     app: AppHandle,
     state: State<'_, AppState>,
     session_ids: Vec<String>,
     speed_label: Option<String>,
 ) -> Result<ReplayBatchSummary, String> {
-    let speed = speed_factor_from_label(speed_label.as_deref().unwrap_or("1x"));
+    if let Some(label) = speed_label.as_deref() {
+        let speed = speed_factor_from_label(label);
+        let mut s = state.replay_state.replay_speed_factor.lock();
+        *s = speed;
+    }
+
+    let speed_factor_arc = state.replay_state.replay_speed_factor.clone();
+
     let mut results = Vec::new();
     let total_sessions = session_ids.len() as u32;
 
@@ -135,7 +174,7 @@ pub fn replay_sessions(
             packets.clone(),
             raw_data,
             &mut rule_engine,
-            speed,
+            speed_factor_arc.clone(),
             move |current, total| {
                 let event = ReplayProgressEvent {
                     session_index: sess_idx_u32,
@@ -269,7 +308,14 @@ pub fn run_pattern_against_engine(
     target_ip: Option<String>,
     speed_label: Option<String>,
 ) -> Result<ReplaySessionResult, String> {
-    let speed = speed_factor_from_label(speed_label.as_deref().unwrap_or("1x"));
+    if let Some(label) = speed_label.as_deref() {
+        let speed = speed_factor_from_label(label);
+        let mut s = state.replay_state.replay_speed_factor.lock();
+        *s = speed;
+    }
+
+    let speed_factor_arc = state.replay_state.replay_speed_factor.clone();
+
     let pm = state.replay_state.pattern_manager.lock();
     let pattern = pm
         .get_pattern(&pattern_id)
@@ -297,7 +343,7 @@ pub fn run_pattern_against_engine(
         traffic.packets.clone(),
         traffic.raw_data,
         &mut rule_engine,
-        speed,
+        speed_factor_arc,
         move |current, total| {
             let event = ReplayProgressEvent {
                 session_index: 0,

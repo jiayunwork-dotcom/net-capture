@@ -36,6 +36,7 @@
   }
 
   function handlePacketClick(packetNo) {
+    closePatternSimResult();
     loadPacketDetail(packetNo);
   }
 </script>
